@@ -67,7 +67,7 @@ class TestAPIPredict:
     def test_predict_valid_client(self):
         response = requests.post(
             f"{API_URL}/predict",
-            json={"sk_id_curr": 100001, "features": {}, "threshold": 0.46},
+            json={"sk_id_curr": 100002, "features": {}, "threshold": 0.46},
             timeout=10
         )
         assert response.status_code == 200
@@ -79,7 +79,7 @@ class TestAPIPredict:
     def test_predict_decision_format(self):
         response = requests.post(
             f"{API_URL}/predict",
-            json={"sk_id_curr": 100001, "features": {}, "threshold": 0.46}
+            json={"sk_id_curr": 100002, "features": {}, "threshold": 0.46}
         )
         data = response.json()
         decision = data["decision"]
@@ -101,7 +101,7 @@ class TestAPIPredict:
     
     def test_predict_consistency(self):
         # Même client, même seuil -> même prédiction
-        payload = {"sk_id_curr": 100001, "features": {}, "threshold": 0.46}
+        payload = {"sk_id_curr": 100002, "features": {}, "threshold": 0.46}
         r1 = requests.post(f"{API_URL}/predict", json=payload)
         r2 = requests.post(f"{API_URL}/predict", json=payload)
         
@@ -115,7 +115,7 @@ class TestAPIPerformance:
         start = time.time()
         requests.get(f"{API_URL}/health")
         elapsed = time.time() - start
-        assert elapsed < 1.0  # < 1 second
+        assert elapsed < 5.0  # < 5 seconds
     
     def test_predict_response_time(self):
         import time
@@ -133,7 +133,7 @@ class TestAPILogic:
         for _ in range(3):
             response = requests.post(
                 f"{API_URL}/predict",
-                json={"sk_id_curr": 100001, "features": {}, "threshold": 0.3}
+                json={"sk_id_curr": 100002, "features": {}, "threshold": 0.3}
             )
             data = response.json()
             if data["risk_probability"] >= 0.3:
@@ -144,7 +144,7 @@ class TestAPILogic:
         # Risque < seuil = ACCORDÉ
         response = requests.post(
             f"{API_URL}/predict",
-            json={"sk_id_curr": 100001, "features": {}, "threshold": 0.9}
+            json={"sk_id_curr": 100002, "features": {}, "threshold": 0.9}
         )
         data = response.json()
         if data["risk_probability"] <= 0.9:

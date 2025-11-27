@@ -305,7 +305,7 @@ def simulate_prediction(features: Dict[str, float]) -> tuple:
     if 'INSTAL_DAYS_PAST_DUE_MEAN' in features:
         risk_score += min(features['INSTAL_DAYS_PAST_DUE_MEAN'] / 100, 0.15)
     
-    risk_prob = max(0, min(1, risk_score + np.random.normal(0, 0.05)))
+    risk_prob = max(0, min(1, risk_score))
     
     # Créer des feature importances simulées
     simulated_importances = {
