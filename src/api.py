@@ -363,16 +363,40 @@ def get_top_10_features(features_dict: Dict) -> List[FeatureImportance]:
 async def startup_event():
     """Initialisation au démarrage"""
     global df_light
-    logger.info("🚀 Démarrage API - Chargement des données light...")
+    logger.info("🚀 Démarrage API - Chargement des données...")
+    
+    # Essayer plusieurs chemins possibles
+    possible_paths = [
+        "data/data_mini_features.csv",  # Local
+        "./data/data_mini_features.csv",  # With dot
+        "/app/data/data_mini_features.csv",  # Railway
+        Path(__file__).parent.parent / "data" / "data_mini_features.csv",  # Relative to file
+    ]
+    
+    data_path = None
+    for path in possible_paths:
+        if isinstance(path, str):
+            if Path(path).exists():
+                data_path = path
+                break
+        else:
+            if path.exists():
+                data_path = str(path)
+                break
+    
+    if data_path is None:
+        logger.error(f"❌ Fichier données non trouvé dans aucun chemin:")
+        for path in possible_paths:
+            logger.error(f"   - {path}")
+        df_light = None
+        return
+    
     try:
-        df_light = pd.read_csv(DATA_LIGHT_PATH)
-        logger.info(f"✅ Données light chargées: {df_light.shape[0]} clients, {df_light.shape[1]} colonnes")
-        # Définir SK_ID_CURR comme index si ce n'est pas déjà fait
-        if 'SK_ID_CURR' in df_light.columns and df_light.index.name != 'SK_ID_CURR':
-            df_light.set_index('SK_ID_CURR', inplace=True)
-            logger.info(f"✅ SK_ID_CURR défini comme index")
+        df_light = pd.read_csv(data_path, index_col='SK_ID_CURR')
+        logger.info(f"✅ Données chargées depuis: {data_path}")
+        logger.info(f"   Shape: {df_light.shape}")
     except Exception as e:
-        logger.error(f"❌ Erreur chargement données light: {e}")
+        logger.error(f"❌ Erreur chargement données: {e}")
         df_light = None
     
     load_model()
