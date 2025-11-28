@@ -62,8 +62,9 @@ EXPERIMENT_NAME = "Default"  # Utilise l'expérience Default (experiment_id: 0)
 OPTIMAL_THRESHOLD = 0.46
 DEFAULT_THRESHOLD = 0.50
 
-# Chemin vers les données light
-DATA_LIGHT_PATH = "data/data_light_features.csv"
+# Chemin vers les données minies (299 features - compatibles avec le modèle)
+# Mini dataset avec 100 clients pour les tests et démonstrations
+DATA_LIGHT_PATH = "data/data_mini_features.csv"
 
 # Features du dataframe light (20 TOP features)
 FEATURES_REQUIRED = [
@@ -140,7 +141,7 @@ def load_model():
         logger.info("=" * 80)
         
         # Le meilleur run trouvé après analyse (réentraîné 2025-11-28)
-        BEST_RUN_ID = "90b4e1707c5d43eaa5d945213f437de5"
+        BEST_RUN_ID = "f896836ac5f24fc7afce8af71c9bdc3a"
         BEST_RUN_NAME = "LightGBM_class_weight"
         BEST_F2_SCORE = 0.4115
         
