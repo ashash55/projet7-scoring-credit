@@ -1,5 +1,6 @@
-﻿# Virtual Environment
+# Virtual Environment
 venv/
+venv_new/
 env/
 ENV/
 .venv
@@ -45,7 +46,7 @@ wheels/
 notebooks/data/
 notebooks/df.csv
 models/
-mlruns/
+
 
 # Environment
 .env
