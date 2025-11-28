@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import List, Dict, Optional
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import logging
@@ -130,83 +131,52 @@ def clean_column_names(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns=column_mapping)
 
 def load_model():
-    """Charge le modèle LightGBM depuis MLflow"""
+    """Charge le meilleur modèle LightGBM depuis MLflow"""
     global model, feature_importances, model_loaded, model_name
     
     try:
         logger.info("=" * 80)
-        logger.info("🔄 Chargement du modèle LightGBM...")
+        logger.info("🔄 Chargement du modèle LightGBM (LightGBM_class_weight)...")
         logger.info("=" * 80)
         
-        # Configurer MLflow
-        mlflow.set_tracking_uri(f"file:///{MLFLOW_TRACKING_URI}")
+        # Le meilleur run trouvé après analyse
+        BEST_RUN_ID = "8211cc0e905c41d09015f129091ab95d"
+        BEST_RUN_NAME = "LightGBM_class_weight"
+        BEST_F2_SCORE = 0.4202
         
-        # Chercher l'expérience
-        experiment = mlflow.get_experiment_by_name(EXPERIMENT_NAME)
-        if not experiment:
-            logger.warning(f"⚠️  Expérience '{EXPERIMENT_NAME}' non trouvée")
-            # Essayer avec experiment_id 0 (Default)
-            try:
-                experiment = mlflow.get_experiment("0")
-                if experiment:
-                    logger.info(f"✅ Utilisation de l'expérience par défaut (ID: 0)")
-            except:
-                logger.warning(f"   Utilisation du modèle simulé pour les tests")
-                model_loaded = False
-                return False
+        # Configurer MLflow avec le chemin local
+        mlflow_path = Path("mlruns")
+        mlflow.set_tracking_uri(str(mlflow_path))
         
-        # Chercher les runs avec de bonnes métriques
-        client = mlflow.tracking.MlflowClient(f"file:///{MLFLOW_TRACKING_URI}")
+        client = mlflow.tracking.MlflowClient(str(mlflow_path))
         
-        try:
-            runs = client.search_runs(
-                experiment_ids=[experiment.experiment_id],
-                filter_string="metrics.`f betascore` > 0.40"
-            )
-        except:
-            # Si la recherche par métrique échoue, chercher tous les runs
-            runs = client.search_runs(experiment_ids=[experiment.experiment_id])
-            logger.info(f"ℹ️  Recherche de tous les runs: {len(runs)} trouvés")
-        
-        if not runs:
-            logger.warning("⚠️  Aucun run avec de bonnes métriques trouvé")
-            logger.warning("   Utilisation du modèle simulé pour les tests")
-            model_loaded = False
-            return False
-        
-        # Trier par F2-Score (f betascore) descendant
+        # Chercher le run dans toutes les expériences
         best_run = None
-        for run in runs:
+        for exp in client.search_experiments():
             try:
-                f2_score = run.data.metrics.get('f betascore', 0)
-                if f2_score > 0.40:
-                    if best_run is None or f2_score > best_run.data.metrics.get('f betascore', 0):
+                runs = client.search_runs(experiment_ids=[exp.experiment_id])
+                for run in runs:
+                    if run.info.run_id == BEST_RUN_ID:
                         best_run = run
+                        break
+                if best_run:
+                    break
             except:
                 continue
         
         if not best_run:
-            # Prendre le premier run avec des artifacts
-            for run in runs:
-                artifacts = client.list_artifacts(run.info.run_id)
-                if artifacts:
-                    best_run = run
-                    break
-        
-        if not best_run:
-            logger.warning("⚠️  Aucun run avec artifacts trouvé")
+            logger.warning(f"⚠️  Run {BEST_RUN_ID} non trouvé")
+            logger.warning("   Utilisation du modèle simulé pour les tests")
             model_loaded = False
             return False
         
         logger.info(f"✅ Run trouvé: {best_run.info.run_id}")
-        try:
-            logger.info(f"   F2-Score: {best_run.data.metrics.get('f betascore', 'N/A'):.4f}")
-        except:
-            logger.info(f"   F2-Score: {best_run.data.metrics.get('f betascore', 'N/A')}")
+        logger.info(f"   Nom: {BEST_RUN_NAME}")
+        logger.info(f"   F2-Score: {BEST_F2_SCORE}")
         
-        # Essayer de charger le modèle
+        # Charger le modèle
         try:
-            # Chercher le chemin de l'artifact
+            # Chercher l'artifact du modèle
             artifacts_list = client.list_artifacts(best_run.info.run_id)
             logger.info(f"   Artifacts disponibles:")
             artifact_names = []
@@ -214,46 +184,51 @@ def load_model():
                 logger.info(f"     - {artifact.path}")
                 artifact_names.append(artifact.path)
             
-            # Essayer de charger depuis MLflow
-            # Chercher le premier artifact (généralement le modèle)
-            model_artifact_name = artifact_names[0] if artifact_names else "model"
+            if not artifact_names:
+                logger.warning(f"❌ Aucun artifact trouvé")
+                model_loaded = False
+                return False
+            
+            # Charger le premier artifact (le modèle)
+            model_artifact_name = artifact_names[0]
             
             try:
                 model = mlflow.sklearn.load_model(f"runs:/{best_run.info.run_id}/{model_artifact_name}")
                 logger.info(f"✅ Modèle chargé avec succès via MLflow ({model_artifact_name})!")
-            except Exception as e2:
-                logger.warning(f"⚠️  Impossible de charger via MLflow ({model_artifact_name}): {e2}")
+                model_name = BEST_RUN_NAME
+            except Exception as e:
+                logger.warning(f"⚠️  Impossible de charger via MLflow: {e}")
                 
                 # Essayer de charger depuis le disque directement
-                model_path = f"{MLFLOW_TRACKING_URI}/0/{best_run.info.run_id}/artifacts/{model_artifact_name}"
-                if os.path.exists(model_path):
+                artifact_path = mlflow_path / best_run.info.run_id / "artifacts" / model_artifact_name
+                
+                if artifact_path.exists():
                     try:
-                        import dill
-                        model_pkl_path = f"{model_path}/model.pkl"
-                        if os.path.exists(model_pkl_path):
-                            with open(model_pkl_path, 'rb') as f:
-                                model = dill.load(f)
-                            logger.info(f"✅ Modèle chargé depuis le disque ({model_pkl_path})!")
+                        import joblib
+                        model_pkl_path = artifact_path / "model.pkl"
+                        if model_pkl_path.exists():
+                            model = joblib.load(model_pkl_path)
+                            logger.info(f"✅ Modèle chargé depuis le disque!")
+                            model_name = BEST_RUN_NAME
                         else:
-                            logger.warning(f"   Fichier model.pkl non trouvé: {model_pkl_path}")
+                            logger.warning(f"❌ Fichier model.pkl non trouvé")
                             model_loaded = False
                             return False
-                    except Exception as e3:
-                        logger.warning(f"   Impossible de charger depuis le disque: {e3}")
+                    except Exception as e2:
+                        logger.warning(f"❌ Erreur lors du chargement: {e2}")
                         model_loaded = False
                         return False
                 else:
-                    logger.warning(f"   Chemin modèle non trouvé: {model_path}")
+                    logger.warning(f"❌ Chemin artifact non trouvé: {artifact_path}")
                     model_loaded = False
                     return False
-            
+        
         except Exception as e:
-            logger.warning(f"⚠️  Erreur lors du chargement: {e}")
+            logger.error(f"❌ Erreur lors du chargement: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             model_loaded = False
             return False
-        
-        logger.info(f"   Type: {type(model).__name__}")
-        logger.info(f"   Features: {len(FEATURES_REQUIRED)}")
         
         # Extraire les feature importances
         try:
@@ -261,32 +236,29 @@ def load_model():
                 feature_importances = dict(zip(FEATURES_REQUIRED, model.feature_importances_))
                 logger.info(f"✅ Feature importances extraites")
             elif hasattr(model, 'named_steps'):
-                # Modèle de pipeline
-                if 'classifier' in model.named_steps:
-                    classifier = model.named_steps['classifier']
-                    if hasattr(classifier, 'feature_importances_'):
-                        feature_importances = dict(zip(FEATURES_REQUIRED, classifier.feature_importances_))
-                        logger.info(f"✅ Feature importances extraites du classifier")
-                    else:
-                        logger.warning(f"⚠️  Le classifier n'a pas d'attribut feature_importances_")
-                        logger.warning(f"   Utilisation des importances simulées")
-                        feature_importances = None
+                # Pipeline
+                classifier = model.named_steps.get('classifier')
+                if classifier and hasattr(classifier, 'feature_importances_'):
+                    feature_importances = dict(zip(FEATURES_REQUIRED, classifier.feature_importances_))
+                    logger.info(f"✅ Feature importances extraites du classifier")
             else:
-                logger.warning(f"⚠️  Le modèle n'a pas feature_importances_")
+                logger.warning(f"⚠️  Modèle sans feature_importances_")
                 feature_importances = None
         except Exception as e:
             logger.warning(f"⚠️  Erreur extraction importances: {e}")
             feature_importances = None
         
+        logger.info(f"✅ Modèle prêt pour les prédictions!")
         model_loaded = True
-        logger.info(f"✅ Modèle chargé et prêt!")
         return True
     
     except Exception as e:
-        logger.error(f"❌ Erreur lors du chargement du modèle: {str(e)}")
+        logger.error(f"❌ Erreur fatale: {str(e)}")
         import traceback
         logger.error(traceback.format_exc())
-        logger.warning("   Utilisation du modèle simulé pour les tests")
+        logger.warning("   Utilisation du modèle simulé")
+        model_loaded = False
+        return False
         model_loaded = False
         return False
 
