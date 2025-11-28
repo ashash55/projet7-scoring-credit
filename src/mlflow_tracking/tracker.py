@@ -106,20 +106,22 @@ class MLFlowTracker:
         import shutil
         
         try:
-            # Vérifier si c'est une imblearn Pipeline avec un classifieur
+            # Sauvegarder le modèle ENTIER (pipeline ou classifieur)
             classifier_to_log = model
-            if hasattr(model, 'named_steps') and 'classifier' in model.named_steps:
-                # C'est une pipeline, extraire le classifieur
-                classifier_to_log = model.named_steps['classifier']
-                print(f"ℹ️ Pipeline détectée, extraction du classifieur: {type(classifier_to_log).__name__}")
+            
+            if hasattr(model, 'named_steps'):
+                # C'est une pipeline, garder le pipeline entier
+                print(f"ℹ️ Pipeline détectée avec steps: {list(model.named_steps.keys())}")
+            else:
+                print(f"ℹ️ Classifieur direct: {type(model).__name__}")
             
             # Créer un dossier temporaire pour stocker le modèle
             temp_model_dir = tempfile.mkdtemp()
             model_pkl_path = os.path.join(temp_model_dir, "model.pkl")
             
-            # Sauvegarder le modèle avec joblib
+            # Sauvegarder le modèle ENTIER avec joblib
             joblib.dump(classifier_to_log, model_pkl_path)
-            print(f"✅ Modèle sauvegardé en pickle: {model_pkl_path}")
+            print(f"✅ Modèle complet sauvegardé en pickle: {model_pkl_path}")
             
             # Logguer le fichier pkl comme artifact directement dans le dossier "model"
             mlflow.log_artifact(model_pkl_path, artifact_path="model")
