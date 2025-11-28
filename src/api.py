@@ -149,35 +149,50 @@ def load_model():
         mlflow_path = None
         for potential_path in [
             Path("/app/mlruns"),  # Railway
-            Path("./mlruns"),     # Local
-            Path("../mlruns"),    # From src/
-            Path(__file__).parent.parent / "mlruns"  # Relative to this file
+            Path("./mlruns"),     # Local (API racine)
+            Path("../mlruns"),    # From src/ subfolder
+            Path(__file__).parent.parent / "mlruns",  # Relative to api.py
+            Path.cwd() / "mlruns"  # From working directory
         ]:
             if potential_path.exists():
                 mlflow_path = potential_path
                 logger.info(f"✅ MLflow path trouvé: {mlflow_path}")
+                logger.info(f"   Type: {type(mlflow_path)}, Absolute: {mlflow_path.absolute()}")
                 break
         
         if mlflow_path is None:
-            logger.warning("⚠️  Aucun chemin mlruns trouvé, utilisation du chemin par défaut: /app/mlruns")
+            logger.warning("⚠️  Aucun chemin mlruns trouvé")
+            logger.warning(f"   Working dir: {Path.cwd()}")
+            logger.warning(f"   Script dir: {Path(__file__).parent.parent}")
+            logger.warning("   Utilisation du chemin par défaut: /app/mlruns")
             mlflow_path = Path("/app/mlruns")
         
-        mlflow.set_tracking_uri(str(mlflow_path))
+        logger.info(f"📂 MLflow tracking URI: {str(mlflow_path)}")
+        mlflow.set_tracking_uri(f"file:{str(mlflow_path.absolute())}")
         
-        client = mlflow.tracking.MlflowClient(str(mlflow_path))
+        client = mlflow.tracking.MlflowClient(f"file:{str(mlflow_path.absolute())}")
+        logger.info("✅ MLflow client créé")
         
         # Chercher le run dans toutes les expériences
         best_run = None
-        for exp in client.search_experiments():
+        experiments = client.search_experiments()
+        logger.info(f"   Nombre d'expériences: {len(experiments)}")
+        
+        for exp in experiments:
+            logger.info(f"   Cherche dans expérience: {exp.experiment_id} ({exp.name})")
             try:
                 runs = client.search_runs(experiment_ids=[exp.experiment_id])
+                logger.info(f"     {len(runs)} runs trouvés")
                 for run in runs:
+                    logger.info(f"       - Run: {run.info.run_id}")
                     if run.info.run_id == BEST_RUN_ID:
                         best_run = run
+                        logger.info(f"         ✅ Match trouvé!")
                         break
                 if best_run:
                     break
-            except:
+            except Exception as e:
+                logger.warning(f"     ⚠️  Erreur: {e}")
                 continue
         
         if not best_run:
@@ -187,57 +202,65 @@ def load_model():
             return False
         
         logger.info(f"✅ Run trouvé: {best_run.info.run_id}")
+        logger.info(f"   Expérience: {best_run.info.experiment_id}")
         logger.info(f"   Nom: {BEST_RUN_NAME}")
         logger.info(f"   F2-Score: {BEST_F2_SCORE}")
         
         # Charger le modèle
         try:
-            # Chercher l'artifact du modèle
-            artifacts_list = client.list_artifacts(best_run.info.run_id)
-            logger.info(f"   Artifacts disponibles:")
-            artifact_names = []
-            for artifact in artifacts_list:
-                logger.info(f"     - {artifact.path}")
-                artifact_names.append(artifact.path)
-            
-            if not artifact_names:
-                logger.warning(f"❌ Aucun artifact trouvé")
-                model_loaded = False
-                return False
-            
-            # Charger le premier artifact (le modèle)
-            model_artifact_name = artifact_names[0]
-            
+            # Première tentative: charger via MLflow
             try:
-                model = mlflow.sklearn.load_model(f"runs:/{best_run.info.run_id}/{model_artifact_name}")
-                logger.info(f"✅ Modèle chargé avec succès via MLflow ({model_artifact_name})!")
+                logger.info("   Tentative 1: Load via MLflow...")
+                model = mlflow.sklearn.load_model(f"runs:/{best_run.info.run_id}/model")
+                logger.info(f"✅ Modèle chargé avec succès via MLflow!")
                 model_name = BEST_RUN_NAME
             except Exception as e:
-                logger.warning(f"⚠️  Impossible de charger via MLflow: {e}")
+                logger.warning(f"   ⚠️  MLflow load failed: {e}")
                 
-                # Essayer de charger depuis le disque directement
-                artifact_path = mlflow_path / best_run.info.run_id / "artifacts" / model_artifact_name
+                # Deuxième tentative: charger depuis le disque avec chemin complet
+                logger.info("   Tentative 2: Load depuis le disque avec chemin complet...")
+                full_artifact_path = mlflow_path / str(best_run.info.experiment_id) / best_run.info.run_id / "artifacts" / "model" / "model.pkl"
                 
-                if artifact_path.exists():
+                logger.info(f"   Chemin essayé: {full_artifact_path}")
+                
+                if full_artifact_path.exists():
+                    logger.info(f"   ✅ Fichier trouvé!")
                     try:
                         import joblib
-                        model_pkl_path = artifact_path / "model.pkl"
-                        if model_pkl_path.exists():
-                            model = joblib.load(model_pkl_path)
-                            logger.info(f"✅ Modèle chargé depuis le disque!")
-                            model_name = BEST_RUN_NAME
-                        else:
-                            logger.warning(f"❌ Fichier model.pkl non trouvé")
-                            model_loaded = False
-                            return False
+                        model = joblib.load(full_artifact_path)
+                        logger.info(f"✅ Modèle chargé depuis le disque (chemin complet)!")
+                        model_name = BEST_RUN_NAME
                     except Exception as e2:
-                        logger.warning(f"❌ Erreur lors du chargement: {e2}")
+                        logger.warning(f"❌ Erreur joblib: {e2}")
                         model_loaded = False
                         return False
                 else:
-                    logger.warning(f"❌ Chemin artifact non trouvé: {artifact_path}")
-                    model_loaded = False
-                    return False
+                    logger.warning(f"   ❌ Fichier non trouvé")
+                    
+                    # Troisième tentative: chercher n'importe où
+                    logger.info("   Tentative 3: Recherche du fichier model.pkl...")
+                    import glob
+                    search_pattern = str(mlflow_path / "**" / "model.pkl")
+                    logger.info(f"   Pattern de recherche: {search_pattern}")
+                    matching_files = glob.glob(search_pattern, recursive=True)
+                    logger.info(f"   Fichiers trouvés: {len(matching_files)}")
+                    
+                    if matching_files:
+                        model_file = matching_files[0]
+                        logger.info(f"   Premier fichier: {model_file}")
+                        try:
+                            import joblib
+                            model = joblib.load(model_file)
+                            logger.info(f"✅ Modèle chargé depuis le fichier trouvé!")
+                            model_name = BEST_RUN_NAME
+                        except Exception as e3:
+                            logger.warning(f"❌ Erreur chargement fichier trouvé: {e3}")
+                            model_loaded = False
+                            return False
+                    else:
+                        logger.warning(f"❌ Aucun model.pkl trouvé dans mlruns")
+                        model_loaded = False
+                        return False
         
         except Exception as e:
             logger.error(f"❌ Erreur lors du chargement: {e}")
