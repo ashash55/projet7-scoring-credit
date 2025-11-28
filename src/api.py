@@ -145,7 +145,23 @@ def load_model():
         BEST_F2_SCORE = 0.4115
         
         # Configurer MLflow avec le chemin local
-        mlflow_path = Path("mlruns")
+        # Essayer plusieurs chemins possibles
+        mlflow_path = None
+        for potential_path in [
+            Path("/app/mlruns"),  # Railway
+            Path("./mlruns"),     # Local
+            Path("../mlruns"),    # From src/
+            Path(__file__).parent.parent / "mlruns"  # Relative to this file
+        ]:
+            if potential_path.exists():
+                mlflow_path = potential_path
+                logger.info(f"✅ MLflow path trouvé: {mlflow_path}")
+                break
+        
+        if mlflow_path is None:
+            logger.warning("⚠️  Aucun chemin mlruns trouvé, utilisation du chemin par défaut: /app/mlruns")
+            mlflow_path = Path("/app/mlruns")
+        
         mlflow.set_tracking_uri(str(mlflow_path))
         
         client = mlflow.tracking.MlflowClient(str(mlflow_path))
