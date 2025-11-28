@@ -52,11 +52,28 @@ class MLFlowTracker:
     def start_run(self, run_name=None):
         """Démarre un nouveau run MLflow"""
         try:
+            # Toujours fermer tout run actif avant de commencer un nouveau
+            if mlflow.active_run():
+                try:
+                    mlflow.end_run()
+                except:
+                    pass  # Ignorer les erreurs si le run n'existe plus
+            
+            # Attendre un peu pour éviter les conflits
+            import time
+            time.sleep(0.1)
+            
             self.current_run = mlflow.start_run(run_name=run_name)
-        except:
-            # Si un run est déjà actif, le fermer d'abord
-            mlflow.end_run()
-            self.current_run = mlflow.start_run(run_name=run_name)
+        except Exception as e:
+            print(f"⚠️ Erreur lors du démarrage du run: {e}")
+            # Essayer une deuxième fois après fermeture forcée
+            try:
+                if mlflow.active_run():
+                    mlflow.end_run()
+                self.current_run = mlflow.start_run(run_name=run_name)
+            except Exception as e2:
+                print(f"❌ Erreur persistante: {e2}")
+                raise
         
         return self.current_run
     
@@ -83,36 +100,43 @@ class MLFlowTracker:
                 print(f"Erreur lors du logging de la métrique {key}: {e}")
     
     def log_model(self, model, model_name="model"):
-        """Log le modèle avec gestion complète (sklearn + joblib)"""
+        """Log le modèle avec gestion complète (sklearn + imblearn + joblib)"""
         import joblib
+        import tempfile
         import shutil
         
         try:
-            # Essayer d'abord avec mlflow.sklearn (fonctionne bien pour sklearn pipelines)
-            try:
-                mlflow.sklearn.log_model(model, artifact_path="model")
-                print(f"✅ Modèle loggé avec mlflow.sklearn")
-                return
-            except Exception as sklearn_error:
-                print(f"⚠️  mlflow.sklearn failed: {sklearn_error}")
+            # Vérifier si c'est une imblearn Pipeline avec un classifieur
+            classifier_to_log = model
+            if hasattr(model, 'named_steps') and 'classifier' in model.named_steps:
+                # C'est une pipeline, extraire le classifieur
+                classifier_to_log = model.named_steps['classifier']
+                print(f"ℹ️ Pipeline détectée, extraction du classifieur: {type(classifier_to_log).__name__}")
             
-            # Fallback: sauvegarder avec joblib directement dans le run
-            import tempfile
-            with tempfile.NamedTemporaryFile(suffix=".pkl", delete=False) as tmp:
-                model_pkl_path = tmp.name
+            # Créer un dossier temporaire pour stocker le modèle
+            temp_model_dir = tempfile.mkdtemp()
+            model_pkl_path = os.path.join(temp_model_dir, "model.pkl")
             
-            # Sauvegarder le modèle
-            joblib.dump(model, model_pkl_path)
+            # Sauvegarder le modèle avec joblib
+            joblib.dump(classifier_to_log, model_pkl_path)
+            print(f"✅ Modèle sauvegardé en pickle: {model_pkl_path}")
             
-            # Logguer le fichier pkl comme artifact
+            # Logguer le fichier pkl comme artifact directement dans le dossier "model"
             mlflow.log_artifact(model_pkl_path, artifact_path="model")
+            print(f"✅ Modèle loggé en artifact MLflow")
             
-            # Nettoyer le fichier temporaire
-            Path(model_pkl_path).unlink()
+            # Nettoyer les fichiers temporaires
+            shutil.rmtree(temp_model_dir)
             
-            print(f"✅ Modèle loggé en artifact (pickle)")
-                
+            # IMPORTANT: Terminer la run pour finalize les artifacts dans le filesystem
+            # (sinon les artifacts restent vides)
+            current_run_id = mlflow.active_run().info.run_id if mlflow.active_run() else "unknown"
+            mlflow.end_run()
+            print(f"✅ Run {current_run_id} terminée et artifacts finalisés")
+            
         except Exception as e:
             print(f"❌ Erreur lors du logging du modèle: {e}")
             import traceback
             traceback.print_exc()
+            if mlflow.active_run():
+                mlflow.end_run()

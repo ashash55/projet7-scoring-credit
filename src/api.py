@@ -140,9 +140,9 @@ def load_model():
         logger.info("=" * 80)
         
         # Le meilleur run trouvé après analyse (réentraîné 2025-11-28)
-        BEST_RUN_ID = "75cf6111a64149628867423dec0212d3"
+        BEST_RUN_ID = "90b4e1707c5d43eaa5d945213f437de5"
         BEST_RUN_NAME = "LightGBM_class_weight"
-        BEST_F2_SCORE = 0.4202
+        BEST_F2_SCORE = 0.4115
         
         # Configurer MLflow avec le chemin local
         mlflow_path = Path("mlruns")
