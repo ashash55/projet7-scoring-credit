@@ -1,0 +1,15 @@
+artifact_uri: file:///c:/ashash/7/projet7-scoring-credit/notebooks/mlruns/0/12718818f5764506a88959d18803a47f/artifacts
+end_time: 1762994577254
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 12718818f5764506a88959d18803a47f
+run_name: LogReg_none
+run_uuid: 12718818f5764506a88959d18803a47f
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1762994577187
+status: 4
+tags: []
+user_id: AyaCheikh
