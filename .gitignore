@@ -38,9 +38,10 @@ wheels/
 .ipynb_checkpoints/
 .jupyter/
 
-# Large data files - IGNORE ALL (except data_light_features.csv)
+# Large data files - IGNORE ALL (except data_light_features.csv and data_mini_features.csv)
 *.csv
 !data/data_light_features.csv
+!data/data_mini_features.csv
 *.parquet
 *.feather
 notebooks/data/
