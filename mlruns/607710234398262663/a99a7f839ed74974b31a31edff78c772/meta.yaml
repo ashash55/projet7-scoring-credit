@@ -1,0 +1,14 @@
+artifact_uri: file:///c:/ashash/7/projet7-scoring-credit/notebooks/../mlruns/607710234398262663/a99a7f839ed74974b31a31edff78c772/artifacts
+end_time: 1764338787661
+entry_point_name: ''
+experiment_id: '607710234398262663'
+lifecycle_stage: active
+run_id: a99a7f839ed74974b31a31edff78c772
+run_name: LogisticRegression_combine
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1764338764914
+status: 3
+tags: []
+user_id: AyaCheikh

@@ -1,0 +1,14 @@
+artifact_uri: file:///c:/ashash/7/projet7-scoring-credit/notebooks/../mlruns/607710234398262663/f1ede72b622149268ce9227903d8f44b/artifacts
+end_time: 1764341369351
+entry_point_name: ''
+experiment_id: '607710234398262663'
+lifecycle_stage: active
+run_id: f1ede72b622149268ce9227903d8f44b
+run_name: LightGBM_smote_0.7
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1764341326700
+status: 3
+tags: []
+user_id: AyaCheikh

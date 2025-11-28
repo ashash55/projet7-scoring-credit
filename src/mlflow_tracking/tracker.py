@@ -83,8 +83,36 @@ class MLFlowTracker:
                 print(f"Erreur lors du logging de la métrique {key}: {e}")
     
     def log_model(self, model, model_name="model"):
-        """Log le modèle"""
+        """Log le modèle avec gestion complète (sklearn + joblib)"""
+        import joblib
+        import shutil
+        
         try:
-            mlflow.sklearn.log_model(model, model_name)
+            # Essayer d'abord avec mlflow.sklearn (fonctionne bien pour sklearn pipelines)
+            try:
+                mlflow.sklearn.log_model(model, artifact_path="model")
+                print(f"✅ Modèle loggé avec mlflow.sklearn")
+                return
+            except Exception as sklearn_error:
+                print(f"⚠️  mlflow.sklearn failed: {sklearn_error}")
+            
+            # Fallback: sauvegarder avec joblib directement dans le run
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix=".pkl", delete=False) as tmp:
+                model_pkl_path = tmp.name
+            
+            # Sauvegarder le modèle
+            joblib.dump(model, model_pkl_path)
+            
+            # Logguer le fichier pkl comme artifact
+            mlflow.log_artifact(model_pkl_path, artifact_path="model")
+            
+            # Nettoyer le fichier temporaire
+            Path(model_pkl_path).unlink()
+            
+            print(f"✅ Modèle loggé en artifact (pickle)")
+                
         except Exception as e:
-            print(f"Erreur lors du logging du modèle: {e}")
+            print(f"❌ Erreur lors du logging du modèle: {e}")
+            import traceback
+            traceback.print_exc()

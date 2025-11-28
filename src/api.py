@@ -139,8 +139,8 @@ def load_model():
         logger.info("🔄 Chargement du modèle LightGBM (LightGBM_class_weight)...")
         logger.info("=" * 80)
         
-        # Le meilleur run trouvé après analyse
-        BEST_RUN_ID = "8211cc0e905c41d09015f129091ab95d"
+        # Le meilleur run trouvé après analyse (réentraîné 2025-11-28)
+        BEST_RUN_ID = "75cf6111a64149628867423dec0212d3"
         BEST_RUN_NAME = "LightGBM_class_weight"
         BEST_F2_SCORE = 0.4202
         
