@@ -1,13 +1,12 @@
 """
-API de Prédiction de Crédit - LightGBM class_weight
-Model: LightGBM avec stratégie class_weight
-Seuil optimal: 0.46
-Port: 8001
+API de Prédiction de Crédit - Interface Web Intégrée
+Affichage des résultats directement dans FastAPI
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 from pathlib import Path
@@ -15,16 +14,12 @@ import numpy as np
 import pandas as pd
 import logging
 from datetime import datetime
-import json
-import mlflow
-import mlflow.sklearn
-import pickle
 import os
 import re
 import uvicorn
 
 # ============================================================================
-# CONFIGURATION LOGGING
+# CONFIGURATION
 # ============================================================================
 logging.basicConfig(
     level=logging.INFO,
@@ -36,16 +31,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ============================================================================
-# INITIALISATION FASTAPI
-# ============================================================================
 app = FastAPI(
     title="API de Prédiction de Crédit",
-    description="API pour la prédiction de crédit utilisant LightGBM",
+    description="API avec interface web intégrée",
     version="2.0.0"
 )
 
-# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -54,19 +45,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ============================================================================
-# CONFIGURATION MODÈLE
-# ============================================================================
-MLFLOW_TRACKING_URI = "notebooks/mlruns"
-EXPERIMENT_NAME = "Default"  # Utilise l'expérience Default (experiment_id: 0)
+# Configuration
 OPTIMAL_THRESHOLD = 0.46
-DEFAULT_THRESHOLD = 0.50
-
-# Chemin vers les données minies (299 features - compatibles avec le modèle)
-# Mini dataset avec 100 clients pour les tests et démonstrations
 DATA_LIGHT_PATH = "data/data_mini_features.csv"
 
-# Features du dataframe light (20 TOP features)
 FEATURES_REQUIRED = [
     'NAME_CONTRACT_TYPE', 'CODE_GENDER', 'FLAG_OWN_CAR', 'FLAG_OWN_REALTY',
     'CNT_CHILDREN', 'AMT_INCOME_TOTAL', 'AMT_CREDIT', 'AMT_ANNUITY',
@@ -77,11 +59,11 @@ FEATURES_REQUIRED = [
 ]
 
 # ============================================================================
-# PYDANTIC MODELS
+# MODELS
 # ============================================================================
 class ClientRequest(BaseModel):
     sk_id_curr: int
-    features: Dict[str, float]
+    features: Dict[str, float] = {}
     threshold: Optional[float] = OPTIMAL_THRESHOLD
 
 class FeatureImportance(BaseModel):
@@ -92,43 +74,32 @@ class FeatureImportance(BaseModel):
 class PredictionResponse(BaseModel):
     sk_id_curr: int
     risk_probability: float
-    decision: str  # "CRÉDIT ACCORDÉ" ou "CRÉDIT REFUSÉ"
+    decision: str
     threshold_used: float
     distance_to_threshold: float
     top_10_features: List[FeatureImportance]
     model_info: Dict
     timestamp: str
 
-class HealthResponse(BaseModel):
-    status: str
-    model_loaded: bool
-    model_name: str
-    threshold: float
-    timestamp: str
-
 # ============================================================================
-# VARIABLES GLOBALES
+# GLOBALS
 # ============================================================================
 model = None
 feature_importances = None
 model_loaded = False
-model_name = "LightGBM_class_weight"
-df_light = None  # Cache pour le dataframe light
+df_light = None
 
 # ============================================================================
-# FONCTIONS UTILITAIRES
+# UTILITIES
 # ============================================================================
 def clean_column_names(df: pd.DataFrame) -> pd.DataFrame:
-    """Nettoie les noms de colonnes pour LightGBM"""
     forbidden_chars = r'[\[\]{}:,"\']'
     column_mapping = {}
-    
     for col in df.columns:
         new_col = re.sub(forbidden_chars, '_', str(col))
         new_col = re.sub(r'_+', '_', new_col)
         new_col = new_col.strip('_')
         column_mapping[col] = new_col
-    
     return df.rename(columns=column_mapping)
 
 def load_model():
@@ -136,215 +107,99 @@ def load_model():
     global model, feature_importances, model_loaded, model_name
     
     try:
-        logger.info("=" * 80)
-        logger.info("🔄 Chargement du modèle LightGBM (LightGBM_class_weight)...")
-        logger.info("=" * 80)
+        logger.info("🔄 Chargement du modèle LightGBM...")
         
-        # Le meilleur run trouvé après analyse (réentraîné 2025-11-28)
         BEST_RUN_ID = "f896836ac5f24fc7afce8af71c9bdc3a"
-        BEST_RUN_NAME = "LightGBM_class_weight"
-        BEST_F2_SCORE = 0.4115
         
-        # Configurer MLflow avec le chemin local
-        # Essayer plusieurs chemins possibles
+        # Chercher mlruns
         mlflow_path = None
         for potential_path in [
-            Path("/app/mlruns"),  # Railway
-            Path("./mlruns"),     # Local (API racine)
-            Path("../mlruns"),    # From src/ subfolder
-            Path(__file__).parent.parent / "mlruns",  # Relative to api.py
-            Path.cwd() / "mlruns"  # From working directory
+            Path("./mlruns"),
+            Path("mlruns"),
+            Path("../mlruns"),
+            Path(__file__).parent.parent / "mlruns",
         ]:
             if potential_path.exists():
                 mlflow_path = potential_path
-                logger.info(f"✅ MLflow path trouvé: {mlflow_path}")
-                logger.info(f"   Type: {type(mlflow_path)}, Absolute: {mlflow_path.absolute()}")
+                logger.info(f"✅ MLflow trouvé: {mlflow_path}")
                 break
         
         if mlflow_path is None:
-            logger.warning("⚠️  Aucun chemin mlruns trouvé")
-            logger.warning(f"   Working dir: {Path.cwd()}")
-            logger.warning(f"   Script dir: {Path(__file__).parent.parent}")
-            logger.warning("   Utilisation du chemin par défaut: /app/mlruns")
-            mlflow_path = Path("/app/mlruns")
-        
-        logger.info(f"📂 MLflow tracking URI: {str(mlflow_path)}")
-        mlflow.set_tracking_uri(f"file:{str(mlflow_path.absolute())}")
-        
-        client = mlflow.tracking.MlflowClient(f"file:{str(mlflow_path.absolute())}")
-        logger.info("✅ MLflow client créé")
-        
-        # Chercher le run dans toutes les expériences
-        best_run = None
-        experiments = client.search_experiments()
-        logger.info(f"   Nombre d'expériences: {len(experiments)}")
-        
-        for exp in experiments:
-            logger.info(f"   Cherche dans expérience: {exp.experiment_id} ({exp.name})")
-            try:
-                runs = client.search_runs(experiment_ids=[exp.experiment_id])
-                logger.info(f"     {len(runs)} runs trouvés")
-                for run in runs:
-                    logger.info(f"       - Run: {run.info.run_id}")
-                    if run.info.run_id == BEST_RUN_ID:
-                        best_run = run
-                        logger.info(f"         ✅ Match trouvé!")
-                        break
-                if best_run:
-                    break
-            except Exception as e:
-                logger.warning(f"     ⚠️  Erreur: {e}")
-                continue
-        
-        if not best_run:
-            logger.warning(f"⚠️  Run {BEST_RUN_ID} non trouvé")
-            logger.warning("   Utilisation du modèle simulé pour les tests")
+            logger.warning("⚠️ MLflow non trouvé, mode simulation")
             model_loaded = False
             return False
         
-        logger.info(f"✅ Run trouvé: {best_run.info.run_id}")
-        logger.info(f"   Expérience: {best_run.info.experiment_id}")
-        logger.info(f"   Nom: {BEST_RUN_NAME}")
-        logger.info(f"   F2-Score: {BEST_F2_SCORE}")
+        # Chercher le fichier model.pkl directement
+        model_file = mlflow_path / "721715311403030274" / BEST_RUN_ID / "artifacts" / "model" / "model.pkl"
         
-        # Charger le modèle
-        try:
-            # Première tentative: charger via MLflow
+        logger.info(f"📂 Chemin modèle: {model_file}")
+        
+        if model_file.exists():
+            logger.info("✅ Fichier model.pkl trouvé!")
+            
+            # Charger avec joblib
+            import joblib
+            model = joblib.load(model_file)
+            logger.info("✅ Modèle chargé avec succès!")
+            
+            # Extraire feature importances
             try:
-                logger.info("   Tentative 1: Load via MLflow...")
-                model = mlflow.sklearn.load_model(f"runs:/{best_run.info.run_id}/model")
-                logger.info(f"✅ Modèle chargé avec succès via MLflow!")
-                model_name = BEST_RUN_NAME
-            except Exception as e:
-                logger.warning(f"   ⚠️  MLflow load failed: {e}")
-                
-                # Deuxième tentative: charger depuis le disque avec chemin complet
-                logger.info("   Tentative 2: Load depuis le disque avec chemin complet...")
-                full_artifact_path = mlflow_path / str(best_run.info.experiment_id) / best_run.info.run_id / "artifacts" / "model" / "model.pkl"
-                
-                logger.info(f"   Chemin essayé: {full_artifact_path}")
-                
-                if full_artifact_path.exists():
-                    logger.info(f"   ✅ Fichier trouvé!")
-                    try:
-                        import joblib
-                        model = joblib.load(full_artifact_path)
-                        logger.info(f"✅ Modèle chargé depuis le disque (chemin complet)!")
-                        model_name = BEST_RUN_NAME
-                    except Exception as e2:
-                        logger.warning(f"❌ Erreur joblib: {e2}")
-                        model_loaded = False
-                        return False
+                if hasattr(model, 'feature_importances_'):
+                    feature_importances = dict(zip(FEATURES_REQUIRED, model.feature_importances_))
+                    logger.info("✅ Feature importances extraites")
+                elif hasattr(model, 'named_steps'):
+                    classifier = model.named_steps.get('classifier')
+                    if classifier and hasattr(classifier, 'feature_importances_'):
+                        feature_importances = dict(zip(FEATURES_REQUIRED, classifier.feature_importances_))
+                        logger.info("✅ Feature importances extraites du pipeline")
                 else:
-                    logger.warning(f"   ❌ Fichier non trouvé")
-                    
-                    # Troisième tentative: chercher n'importe où
-                    logger.info("   Tentative 3: Recherche du fichier model.pkl...")
-                    import glob
-                    search_pattern = str(mlflow_path / "**" / "model.pkl")
-                    logger.info(f"   Pattern de recherche: {search_pattern}")
-                    matching_files = glob.glob(search_pattern, recursive=True)
-                    logger.info(f"   Fichiers trouvés: {len(matching_files)}")
-                    
-                    if matching_files:
-                        model_file = matching_files[0]
-                        logger.info(f"   Premier fichier: {model_file}")
-                        try:
-                            import joblib
-                            model = joblib.load(model_file)
-                            logger.info(f"✅ Modèle chargé depuis le fichier trouvé!")
-                            model_name = BEST_RUN_NAME
-                        except Exception as e3:
-                            logger.warning(f"❌ Erreur chargement fichier trouvé: {e3}")
-                            model_loaded = False
-                            return False
-                    else:
-                        logger.warning(f"❌ Aucun model.pkl trouvé dans mlruns")
-                        model_loaded = False
-                        return False
-        
-        except Exception as e:
-            logger.error(f"❌ Erreur lors du chargement: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+                    logger.warning("⚠️ Pas de feature importances")
+                    feature_importances = None
+            except Exception as e:
+                logger.warning(f"⚠️ Erreur extraction importances: {e}")
+                feature_importances = None
+            
+            model_loaded = True
+            model_name = "LightGBM_class_weight"
+            logger.info("✅ Modèle prêt pour les prédictions!")
+            return True
+        else:
+            logger.error(f"❌ Fichier non trouvé: {model_file}")
+            logger.warning("⚠️ Mode simulation activé")
             model_loaded = False
             return False
-        
-        # Extraire les feature importances
-        try:
-            if hasattr(model, 'feature_importances_'):
-                feature_importances = dict(zip(FEATURES_REQUIRED, model.feature_importances_))
-                logger.info(f"✅ Feature importances extraites")
-            elif hasattr(model, 'named_steps'):
-                # Pipeline
-                classifier = model.named_steps.get('classifier')
-                if classifier and hasattr(classifier, 'feature_importances_'):
-                    feature_importances = dict(zip(FEATURES_REQUIRED, classifier.feature_importances_))
-                    logger.info(f"✅ Feature importances extraites du classifier")
-            else:
-                logger.warning(f"⚠️  Modèle sans feature_importances_")
-                feature_importances = None
-        except Exception as e:
-            logger.warning(f"⚠️  Erreur extraction importances: {e}")
-            feature_importances = None
-        
-        logger.info(f"✅ Modèle prêt pour les prédictions!")
-        model_loaded = True
-        return True
     
     except Exception as e:
-        logger.error(f"❌ Erreur fatale: {str(e)}")
+        logger.error(f"❌ Erreur: {str(e)}")
         import traceback
         logger.error(traceback.format_exc())
-        logger.warning("   Utilisation du modèle simulé")
-        model_loaded = False
-        return False
         model_loaded = False
         return False
 
 def simulate_prediction(features: Dict[str, float]) -> tuple:
-    """
-    Simule une prédiction si le modèle réel n'est pas disponible
-    Retourne (probabilité_risque, importances_features)
-    """
-    # Simulation simple basée sur les features
     risk_score = 0.5
-    
     if 'EXT_SOURCE_2' in features:
-        risk_score -= features['EXT_SOURCE_2'] * 0.25
+        risk_score -= features.get('EXT_SOURCE_2', 0) * 0.25
     if 'DEBT_RATIO' in features:
-        risk_score += features['DEBT_RATIO'] * 0.20
-    if 'INSTAL_DAYS_PAST_DUE_MEAN' in features:
-        risk_score += min(features['INSTAL_DAYS_PAST_DUE_MEAN'] / 100, 0.15)
+        risk_score += features.get('DEBT_RATIO', 0) * 0.20
     
     risk_prob = max(0, min(1, risk_score))
     
-    # Créer des feature importances simulées
     simulated_importances = {
         'EXT_SOURCE_2': 0.20,
         'DEBT_RATIO': 0.18,
         'PAYMENT_RATE': 0.15,
         'INSTAL_DAYS_PAST_DUE_MEAN': 0.12,
-        'AGE': 0.10,
-        'CREDIT_DURATION': 0.08,
-        'AMT_CREDIT': 0.07,
-        'YEARS_EMPLOYED': 0.05,
-        'BURO_AMT_CREDIT_SUM_DEBT_MEAN': 0.04,
-        'CODE_GENDER': 0.01
+        'AGE': 0.10
     }
     
     return float(risk_prob), simulated_importances
 
 def get_top_10_features(features_dict: Dict) -> List[FeatureImportance]:
-    """Retourne les 10 features les plus importantes"""
     if not features_dict:
         features_dict = {}
     
-    sorted_features = sorted(
-        features_dict.items(),
-        key=lambda x: x[1],
-        reverse=True
-    )[:10]
+    sorted_features = sorted(features_dict.items(), key=lambda x: x[1], reverse=True)[:10]
     
     return [
         FeatureImportance(
@@ -356,154 +211,709 @@ def get_top_10_features(features_dict: Dict) -> List[FeatureImportance]:
     ]
 
 # ============================================================================
-# ENDPOINTS API
+# STARTUP
 # ============================================================================
-
 @app.on_event("startup")
 async def startup_event():
-    """Initialisation au démarrage"""
     global df_light
-    logger.info("🚀 Démarrage API - Chargement des données...")
+    logger.info("🚀 Démarrage API...")
     
-    # Essayer plusieurs chemins possibles
     possible_paths = [
-        "data/data_mini_features.csv",  # Local
-        "./data/data_mini_features.csv",  # With dot
-        "/app/data/data_mini_features.csv",  # Railway
-        Path(__file__).parent.parent / "data" / "data_mini_features.csv",  # Relative to file
+        "data/data_mini_features.csv",
+        "./data/data_mini_features.csv",
+        "/app/data/data_mini_features.csv",
+        Path(__file__).parent.parent / "data" / "data_mini_features.csv",
     ]
     
     data_path = None
     for path in possible_paths:
-        if isinstance(path, str):
-            if Path(path).exists():
-                data_path = path
-                break
-        else:
-            if path.exists():
-                data_path = str(path)
-                break
+        path_obj = Path(path) if isinstance(path, str) else path
+        if path_obj.exists():
+            data_path = str(path_obj)
+            break
     
-    if data_path is None:
-        logger.error(f"❌ Fichier données non trouvé dans aucun chemin:")
-        for path in possible_paths:
-            logger.error(f"   - {path}")
-        df_light = None
-        return
-    
-    try:
-        df_light = pd.read_csv(data_path, index_col='SK_ID_CURR')
-        logger.info(f"✅ Données chargées depuis: {data_path}")
-        logger.info(f"   Shape: {df_light.shape}")
-    except Exception as e:
-        logger.error(f"❌ Erreur chargement données: {e}")
-        df_light = None
+    if data_path:
+        try:
+            df_light = pd.read_csv(data_path, index_col='SK_ID_CURR')
+            logger.info(f"✅ Données chargées: {df_light.shape}")
+        except Exception as e:
+            logger.error(f"❌ Erreur données: {e}")
+            df_light = None
     
     load_model()
 
-@app.get("/health", response_model=HealthResponse)
-async def health_check():
-    """Vérifier la santé de l'API"""
-    logger.info("✅ Health check demandé")
+# ============================================================================
+# INTERFACE WEB PRINCIPALE
+# ============================================================================
+@app.get("/", response_class=HTMLResponse)
+async def home():
+    """Interface web principale"""
+    html = """
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prédiction de Crédit - Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            margin-bottom: 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            color: #667eea;
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            color: #666;
+            font-size: 1.1em;
+        }
+        
+        .status-bar {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+            margin-bottom: 30px;
+            display: flex;
+            justify-content: space-around;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        
+        .status-item {
+            text-align: center;
+            padding: 10px 20px;
+        }
+        
+        .status-item label {
+            display: block;
+            color: #888;
+            font-size: 0.9em;
+            margin-bottom: 5px;
+        }
+        
+        .status-item value {
+            display: block;
+            color: #333;
+            font-size: 1.3em;
+            font-weight: bold;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        
+        .status-online {
+            background: #27ae60;
+            box-shadow: 0 0 10px #27ae60;
+        }
+        
+        .status-offline {
+            background: #e74c3c;
+        }
+        
+        .main-content {
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+        }
+        
+        .section {
+            margin-bottom: 30px;
+        }
+        
+        .section h2 {
+            color: #667eea;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 3px solid #667eea;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        .form-group label {
+            display: block;
+            color: #555;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+        
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 1em;
+            transition: border-color 0.3s;
+        }
+        
+        .form-group input:focus, .form-group select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px 40px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1.1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(102, 126, 234, 0.6);
+        }
+        
+        .btn:active {
+            transform: translateY(0);
+        }
+        
+        .btn-secondary {
+            background: #95a5a6;
+            margin-left: 10px;
+        }
+        
+        #result {
+            margin-top: 30px;
+            padding: 25px;
+            border-radius: 10px;
+            display: none;
+        }
+        
+        .result-approved {
+            background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%);
+            border: 2px solid #28a745;
+        }
+        
+        .result-rejected {
+            background: linear-gradient(135deg, #f8d7da 0%, #f5c6cb 100%);
+            border: 2px solid #dc3545;
+        }
+        
+        .result-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        
+        .result-decision {
+            font-size: 2em;
+            font-weight: bold;
+        }
+        
+        .decision-approved {
+            color: #28a745;
+        }
+        
+        .decision-rejected {
+            color: #dc3545;
+        }
+        
+        .result-probability {
+            font-size: 1.5em;
+        }
+        
+        .metric {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        
+        .metric-label {
+            color: #666;
+            font-size: 0.9em;
+            margin-bottom: 5px;
+        }
+        
+        .metric-value {
+            font-size: 1.3em;
+            font-weight: bold;
+            color: #333;
+        }
+        
+        .features-table {
+            width: 100%;
+            margin-top: 20px;
+            border-collapse: collapse;
+        }
+        
+        .features-table th, .features-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        
+        .features-table th {
+            background: #667eea;
+            color: white;
+            font-weight: 600;
+        }
+        
+        .features-table tr:hover {
+            background: #f8f9fa;
+        }
+        
+        .progress-bar {
+            width: 100%;
+            height: 30px;
+            background: #e9ecef;
+            border-radius: 15px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #28a745, #dc3545);
+            transition: width 0.5s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+        }
+        
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+        
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .clients-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+            gap: 10px;
+            margin-top: 20px;
+            max-height: 300px;
+            overflow-y: auto;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }
+        
+        .client-badge {
+            background: white;
+            padding: 10px;
+            border-radius: 5px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 2px solid transparent;
+        }
+        
+        .client-badge:hover {
+            background: #667eea;
+            color: white;
+            transform: scale(1.05);
+            border-color: #667eea;
+        }
+        
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 1.8em;
+            }
+            
+            .status-bar {
+                flex-direction: column;
+            }
+            
+            .result-header {
+                flex-direction: column;
+                gap: 15px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>🎯 Prédiction de Crédit</h1>
+            <p>Système d'analyse de risque de crédit avec LightGBM</p>
+        </div>
+        
+        <!-- Status Bar -->
+        <div class="status-bar" id="statusBar">
+            <div class="status-item">
+                <label>Status API</label>
+                <value>
+                    <span class="status-indicator status-offline"></span>
+                    <span id="apiStatus">Chargement...</span>
+                </value>
+            </div>
+            <div class="status-item">
+                <label>Modèle</label>
+                <value id="modelName">-</value>
+            </div>
+            <div class="status-item">
+                <label>Seuil Optimal</label>
+                <value id="threshold">-</value>
+            </div>
+            <div class="status-item">
+                <label>Clients Disponibles</label>
+                <value id="clientsCount">-</value>
+            </div>
+        </div>
+        
+        <!-- Main Content -->
+        <div class="main-content">
+            <div class="section">
+                <h2>🔍 Sélection du Client</h2>
+                
+                <div class="form-group">
+                    <label for="clientId">ID Client</label>
+                    <input type="number" id="clientId" placeholder="Ex: 100001">
+                </div>
+                
+                <div class="form-group">
+                    <label for="thresholdInput">Seuil de Décision (0-1)</label>
+                    <input type="number" id="thresholdInput" step="0.01" min="0" max="1" value="0.46">
+                </div>
+                
+                <div>
+                    <button class="btn" onclick="predict()">🚀 Analyser</button>
+                    <button class="btn btn-secondary" onclick="loadClients()">📋 Voir Clients</button>
+                    <button class="btn btn-secondary" onclick="clearResult()">🗑️ Effacer</button>
+                </div>
+            </div>
+            
+            <!-- Clients List -->
+            <div class="section" id="clientsSection" style="display:none;">
+                <h2>📋 Liste des Clients</h2>
+                <div class="clients-grid" id="clientsList"></div>
+            </div>
+            
+            <!-- Loading -->
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <p>Analyse en cours...</p>
+            </div>
+            
+            <!-- Result -->
+            <div id="result">
+                <div class="result-header">
+                    <div>
+                        <div class="result-decision" id="decision">-</div>
+                        <div style="color: #666; margin-top: 5px;">Client #<span id="resultClientId">-</span></div>
+                    </div>
+                    <div class="result-probability" id="probability">-</div>
+                </div>
+                
+                <div class="metric">
+                    <div class="metric-label">Probabilité de Risque</div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressBar">0%</div>
+                    </div>
+                </div>
+                
+                <div class="metric">
+                    <div class="metric-label">Distance au Seuil</div>
+                    <div class="metric-value" id="distance">-</div>
+                </div>
+                
+                <div class="metric">
+                    <div class="metric-label">Seuil Utilisé</div>
+                    <div class="metric-value" id="usedThreshold">-</div>
+                </div>
+                
+                <h3 style="margin-top: 30px; color: #667eea;">🔝 Top 10 Features Importantes</h3>
+                <table class="features-table">
+                    <thead>
+                        <tr>
+                            <th>Rang</th>
+                            <th>Feature</th>
+                            <th>Importance</th>
+                        </tr>
+                    </thead>
+                    <tbody id="featuresTable"></tbody>
+                </table>
+                
+                <div style="margin-top: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px;">
+                    <strong>Informations Modèle:</strong>
+                    <div id="modelInfo" style="margin-top: 10px; color: #666;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
     
-    return HealthResponse(
-        status="healthy" if model_loaded else "degraded",
-        model_loaded=model_loaded,
-        model_name=model_name,
-        threshold=OPTIMAL_THRESHOLD,
-        timestamp=datetime.now().isoformat()
-    )
+    <script>
+        // Check API health on load
+        window.onload = function() {
+            checkHealth();
+        };
+        
+        async function checkHealth() {
+            try {
+                const response = await fetch('/health');
+                const data = await response.json();
+                
+                document.getElementById('apiStatus').textContent = data.status === 'healthy' ? 'En ligne' : 'Dégradé';
+                document.querySelector('.status-indicator').className = 
+                    'status-indicator ' + (data.status === 'healthy' ? 'status-online' : 'status-offline');
+                document.getElementById('modelName').textContent = data.model_name;
+                document.getElementById('threshold').textContent = data.threshold;
+                
+                // Get clients count
+                const clientsResponse = await fetch('/clients');
+                const clientsData = await clientsResponse.json();
+                document.getElementById('clientsCount').textContent = clientsData.total_clients;
+                
+            } catch (error) {
+                console.error('Error checking health:', error);
+                document.getElementById('apiStatus').textContent = 'Erreur';
+            }
+        }
+        
+        async function predict() {
+            const clientId = parseInt(document.getElementById('clientId').value);
+            const threshold = parseFloat(document.getElementById('thresholdInput').value);
+            
+            if (!clientId) {
+                alert('Veuillez entrer un ID client');
+                return;
+            }
+            
+            if (threshold < 0 || threshold > 1) {
+                alert('Le seuil doit être entre 0 et 1');
+                return;
+            }
+            
+            // Show loading
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('result').style.display = 'none';
+            
+            try {
+                const response = await fetch('/predict', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        sk_id_curr: clientId,
+                        features: {},
+                        threshold: threshold
+                    })
+                });
+                
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Erreur de prédiction');
+                }
+                
+                const data = await response.json();
+                displayResult(data);
+                
+            } catch (error) {
+                alert('Erreur: ' + error.message);
+            } finally {
+                document.getElementById('loading').style.display = 'none';
+            }
+        }
+        
+        function displayResult(data) {
+            // Show result section
+            const resultDiv = document.getElementById('result');
+            resultDiv.style.display = 'block';
+            
+            // Set decision styling
+            const isApproved = data.decision === 'CRÉDIT ACCORDÉ';
+            resultDiv.className = isApproved ? 'result-approved' : 'result-rejected';
+            
+            // Update decision
+            const decisionEl = document.getElementById('decision');
+            decisionEl.textContent = data.decision;
+            decisionEl.className = 'result-decision ' + (isApproved ? 'decision-approved' : 'decision-rejected');
+            
+            // Update values
+            document.getElementById('resultClientId').textContent = data.sk_id_curr;
+            document.getElementById('probability').textContent = 
+                'Risque: ' + (data.risk_probability * 100).toFixed(2) + '%';
+            document.getElementById('distance').textContent = 
+                (data.distance_to_threshold * 100).toFixed(2) + '%';
+            document.getElementById('usedThreshold').textContent = data.threshold_used;
+            
+            // Update progress bar
+            const progressBar = document.getElementById('progressBar');
+            const percentage = (data.risk_probability * 100).toFixed(1);
+            progressBar.style.width = percentage + '%';
+            progressBar.textContent = percentage + '%';
+            
+            // Update features table
+            const tableBody = document.getElementById('featuresTable');
+            tableBody.innerHTML = '';
+            data.top_10_features.forEach(feature => {
+                const row = tableBody.insertRow();
+                row.innerHTML = `
+                    <td>${feature.rank}</td>
+                    <td>${feature.feature_name}</td>
+                    <td>${feature.importance_value.toFixed(4)}</td>
+                `;
+            });
+            
+            // Update model info
+            const modelInfo = document.getElementById('modelInfo');
+            modelInfo.innerHTML = `
+                <div>Modèle: ${data.model_info.model_name}</div>
+                <div>Stratégie: ${data.model_info.strategy}</div>
+                <div>F2-Score: ${data.model_info.f2_score}</div>
+                <div>Recall: ${data.model_info.recall}</div>
+                <div>Precision: ${data.model_info.precision}</div>
+            `;
+            
+            // Scroll to result
+            resultDiv.scrollIntoView({ behavior: 'smooth' });
+        }
+        
+        async function loadClients() {
+            try {
+                const response = await fetch('/clients');
+                const data = await response.json();
+                
+                const clientsList = document.getElementById('clientsList');
+                const clientsSection = document.getElementById('clientsSection');
+                
+                clientsList.innerHTML = '';
+                data.first_10.forEach(clientId => {
+                    const badge = document.createElement('div');
+                    badge.className = 'client-badge';
+                    badge.textContent = clientId;
+                    badge.onclick = () => {
+                        document.getElementById('clientId').value = clientId;
+                        clientsSection.style.display = 'none';
+                    };
+                    clientsList.appendChild(badge);
+                });
+                
+                clientsSection.style.display = 'block';
+                clientsSection.scrollIntoView({ behavior: 'smooth' });
+                
+            } catch (error) {
+                alert('Erreur chargement clients: ' + error.message);
+            }
+        }
+        
+        function clearResult() {
+            document.getElementById('result').style.display = 'none';
+            document.getElementById('clientId').value = '';
+            document.getElementById('clientsSection').style.display = 'none';
+        }
+    </script>
+</body>
+</html>
+    """
+    return html
+
+# ============================================================================
+# API ENDPOINTS
+# ============================================================================
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy" if model_loaded else "degraded",
+        "model_loaded": model_loaded,
+        "model_name": "LightGBM_class_weight",
+        "threshold": OPTIMAL_THRESHOLD,
+        "timestamp": datetime.now().isoformat()
+    }
 
 @app.post("/predict", response_model=PredictionResponse)
 async def predict(client_request: ClientRequest):
-    """
-    Prédire pour un client
-    
-    Paramètres:
-    - sk_id_curr: Numéro client
-    - features: Dictionnaire optionnel des features (si vide, récupère depuis df_light)
-    - threshold: Seuil de décision (optionnel, défaut 0.46)
-    """
     try:
         sk_id = client_request.sk_id_curr
         threshold = client_request.threshold or OPTIMAL_THRESHOLD
         
-        logger.info(f"📊 Requête de prédiction pour le client {sk_id}")
-        
-        # Valider le seuil
         if not 0 <= threshold <= 1:
-            raise HTTPException(
-                status_code=400,
-                detail="Le seuil doit être entre 0 et 1"
-            )
+            raise HTTPException(status_code=400, detail="Seuil entre 0 et 1")
         
-        # Récupérer les features du client depuis df_light
         if df_light is None:
-            raise HTTPException(
-                status_code=503,
-                detail="Données light non chargées"
-            )
+            raise HTTPException(status_code=503, detail="Données non chargées")
         
         if sk_id not in df_light.index:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Client {sk_id} non trouvé dans les données"
-            )
+            raise HTTPException(status_code=404, detail=f"Client {sk_id} non trouvé")
         
-        # Récupérer les features du client
         client_data = df_light.loc[sk_id]
         features = client_data.to_dict()
         
-        logger.info(f"✅ Client trouvé: {len(features)} features")
-        
-        # Préparer les données pour la prédiction
         X = pd.DataFrame([features])
         X = clean_column_names(X)
         X = X[sorted(X.columns)]
         
-        # Prédiction
         risk_prob = None
         importances = None
         
         if model_loaded and model is not None:
             try:
-                logger.info(f"   Tentative prédiction avec le modèle réel...")
-                # Essayer predict_proba
-                try:
-                    risk_prob = float(model.predict_proba(X)[0, 1])
-                    logger.info(f"   ✅ predict_proba réussi")
-                except:
-                    # Essayer predict directement
-                    logger.info(f"   ⚠️  predict_proba failed, trying predict()...")
-                    pred = model.predict(X)
-                    risk_prob = float(pred[0]) if len(pred.shape) == 1 else float(pred[0, 1])
-                    logger.info(f"   ✅ predict réussi")
-                
-                # Utiliser les feature importances si disponibles
+                risk_prob = float(model.predict_proba(X)[0, 1])
                 importances = feature_importances if feature_importances else {}
-                
-            except Exception as e:
-                logger.warning(f"⚠️  Erreur modèle réel: {type(e).__name__}: {e}")
-                logger.warning(f"   Utilisation de la simulation")
+            except:
                 risk_prob, importances = simulate_prediction(features)
         else:
-            logger.info(f"   Modèle non chargé, utilisation simulation")
             risk_prob, importances = simulate_prediction(features)
         
-        # S'assurer que risk_prob est un float valide
         if risk_prob is None:
             risk_prob, importances = simulate_prediction(features)
         
         risk_prob = float(risk_prob)
-        
-        # Décision
         decision = "CRÉDIT REFUSÉ" if risk_prob >= threshold else "CRÉDIT ACCORDÉ"
         distance = abs(risk_prob - threshold)
-        
-        # Top 10 features
         top_10 = get_top_10_features(importances)
-        
-        logger.info(f"✅ Prédiction: {decision} (Risque: {risk_prob:.4f}, Seuil: {threshold})")
         
         return PredictionResponse(
             sk_id_curr=sk_id,
@@ -525,84 +935,13 @@ async def predict(client_request: ClientRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Erreur prédiction: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/predict_batch")
-async def predict_batch(clients: List[ClientRequest]):
-    """Prédictions en batch pour plusieurs clients"""
-    try:
-        logger.info(f"📊 Batch request pour {len(clients)} clients")
-        
-        predictions = []
-        errors = []
-        
-        for client in clients:
-            try:
-                # Réutiliser la logique de predict
-                features = client.features
-                threshold = client.threshold or OPTIMAL_THRESHOLD
-                
-                # Valider features
-                missing = [f for f in FEATURES_REQUIRED if f not in features]
-                if missing:
-                    errors.append({
-                        'sk_id_curr': client.sk_id_curr,
-                        'error': f"Features manquantes: {missing}"
-                    })
-                    continue
-                
-                # Préparer données
-                X = pd.DataFrame([features])
-                X = clean_column_names(X)
-                
-                # Prédiction
-                if model_loaded and model is not None:
-                    try:
-                        risk_prob = float(model.predict_proba(X)[0, 1])
-                    except:
-                        risk_prob, _ = simulate_prediction(features)
-                else:
-                    risk_prob, _ = simulate_prediction(features)
-                
-                decision = "CRÉDIT REFUSÉ" if risk_prob >= threshold else "CRÉDIT ACCORDÉ"
-                
-                predictions.append({
-                    'sk_id_curr': client.sk_id_curr,
-                    'risk_probability': risk_prob,
-                    'decision': decision,
-                    'threshold_used': threshold
-                })
-            
-            except Exception as e:
-                errors.append({
-                    'sk_id_curr': client.sk_id_curr,
-                    'error': str(e)
-                })
-        
-        logger.info(f"✅ Batch traité: {len(predictions)} succès, {len(errors)} erreurs")
-        
-        return {
-            'count': len(predictions),
-            'predictions': predictions,
-            'errors': errors,
-            'timestamp': datetime.now().isoformat()
-        }
-    
-    except Exception as e:
-        logger.error(f"❌ Erreur batch: {str(e)}")
+        logger.error(f"❌ Erreur: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/clients")
 async def list_clients():
-    """Liste tous les clients disponibles"""
-    global df_light
-    
     if df_light is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Données light non chargées"
-        )
+        raise HTTPException(status_code=503, detail="Données non chargées")
     
     clients_list = df_light.index.tolist()
     return {
@@ -614,117 +953,23 @@ async def list_clients():
 
 @app.get("/info")
 async def model_info():
-    """Obtenir les informations du modèle"""
     return {
         'model_name': 'LightGBM',
         'model_version': '1.0.0',
         'strategy': 'class_weight',
         'features_count': len(FEATURES_REQUIRED),
-        'features': FEATURES_REQUIRED,
         'optimal_threshold': OPTIMAL_THRESHOLD,
-        'default_threshold': DEFAULT_THRESHOLD,
-        'data_source': 'data_light_features.csv',
-        'total_clients': 307505,
         'metrics': {
             'f2_score': 0.4202,
             'recall': 0.6143,
-            'precision': 0.1856,
-            'accuracy': 0.7495,
-            'auc': 0.7584
-        },
-        'created_at': '2025-11-26',
-        'timestamp': datetime.now().isoformat()
+            'precision': 0.1856
+        }
     }
 
-@app.get("/docs-html", response_class=HTMLResponse)
-async def api_docs():
-    """Documentation HTML de l'API"""
-    html = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>API de Prédiction de Crédit</title>
-        <style>
-            body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
-            .container { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-            h1 { color: #2c3e50; }
-            h2 { color: #34495e; border-bottom: 3px solid #3498db; padding-bottom: 10px; }
-            .endpoint { background: #ecf0f1; padding: 15px; margin: 15px 0; border-left: 4px solid #3498db; border-radius: 5px; }
-            code { background: #f4f4f4; padding: 3px 8px; border-radius: 3px; font-family: monospace; }
-            pre { background: #2c3e50; color: #ecf0f1; padding: 15px; border-radius: 5px; overflow-x: auto; }
-            .success { color: #27ae60; font-weight: bold; }
-            .warning { color: #e67e22; font-weight: bold; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>🎯 API de Prédiction de Crédit</h1>
-            <p><strong>Modèle:</strong> LightGBM avec stratégie class_weight</p>
-            <p><strong>Seuil Optimal:</strong> 0.46 | <strong>F2-Score:</strong> 0.4202 | <strong>Recall:</strong> 0.6143</p>
-            
-            <h2>📋 Endpoints Disponibles</h2>
-            
-            <div class="endpoint">
-                <h3>GET /health</h3>
-                <p>Vérifier la santé de l'API</p>
-                <pre>curl http://localhost:8080/health</pre>
-            </div>
-            
-            <div class="endpoint">
-                <h3>POST /predict</h3>
-                <p>Prédire pour un client</p>
-                <pre>{
-  "sk_id_curr": 100001,
-  "features": { ...30 features... },
-  "threshold": 0.46
-}</pre>
-                <p><strong>Réponse:</strong> Probabilité de risque, décision (CRÉDIT ACCORDÉ/REFUSÉ), top 10 features</p>
-            </div>
-            
-            <div class="endpoint">
-                <h3>POST /predict_batch</h3>
-                <p>Prédictions en batch</p>
-                <pre>[
-  {"sk_id_curr": 100001, "features": {...}},
-  {"sk_id_curr": 100002, "features": {...}}
-]</pre>
-            </div>
-            
-            <div class="endpoint">
-                <h3>GET /info</h3>
-                <p>Information du modèle et features</p>
-                <pre>curl http://localhost:8080/info</pre>
-            </div>
-            
-            <h2>⚙️ Configuration</h2>
-            <ul>
-                <li><strong>Seuil Optimal:</strong> 0.46 (minimise le score métier)</li>
-                <li><strong>Seuil Défaut:</strong> 0.50</li>
-                <li><strong>Features Required:</strong> 30 features numériques</li>
-            </ul>
-            
-            <h2>✅ Status</h2>
-            <p class="success">API Running on http://localhost:8080</p>
-            <p class="warning">Pour les tests, utilisez le notebook Streamlit</p>
-        </div>
-    </body>
-    </html>
-    """
-    return html
-
 if __name__ == "__main__":
-    logger.info("=" * 80)
-    logger.info("🚀 Démarrage de l'API de Prédiction de Crédit")
-    logger.info("=" * 80)
-    logger.info(f"📍 URL: http://localhost:8080")
-    logger.info(f"📚 Docs: http://localhost:8080/docs")
-    logger.info(f"🏥 Health: http://localhost:8080/health")
-    logger.info(f"⚙️  Seuil Optimal: {OPTIMAL_THRESHOLD}")
-    logger.info("=" * 80)
+    port = int(os.environ.get('PORT', 8001))
+    logger.info("🚀 API avec Interface Web")
+    logger.info(f"📍 URL: http://localhost:{port}")
+    logger.info(f"🌐 Interface: http://localhost:{port}/")
     
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=8001,
-        log_level="info"
-    )
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
