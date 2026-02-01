@@ -217,9 +217,10 @@ def get_top_10_features(features_dict: Dict) -> List[FeatureImportance]:
 # ============================================================================
 @app.on_event("startup")
 async def startup_event():
-    global df_light
+    global df_light, model_loaded
     logger.info("🚀 Démarrage API...")
     
+    # Charger les données
     possible_paths = [
         "data/data_mini_features.csv",
         "./data/data_mini_features.csv",
@@ -232,6 +233,7 @@ async def startup_event():
         path_obj = Path(path) if isinstance(path, str) else path
         if path_obj.exists():
             data_path = str(path_obj)
+            logger.info(f"📂 Données trouvées: {data_path}")
             break
     
     if data_path:
@@ -239,10 +241,19 @@ async def startup_event():
             df_light = pd.read_csv(data_path, index_col='SK_ID_CURR')
             logger.info(f"✅ Données chargées: {df_light.shape}")
         except Exception as e:
-            logger.error(f"❌ Erreur données: {e}")
+            logger.error(f"❌ Erreur chargement données: {e}")
             df_light = None
+    else:
+        logger.warning("⚠️ Données CSV non trouvées - Mode simulation)")
+        df_light = None
     
-    load_model()
+    # Charger le modèle (peut échouer, c'est ok)
+    try:
+        load_model()
+        logger.info("✅ Modèle chargé avec succès")
+    except Exception as e:
+        logger.warning(f"⚠️ Modèle non disponible: {e} - Mode simulation activé")
+        model_loaded = False
 
 # ============================================================================
 # INTERFACE WEB PRINCIPALE
