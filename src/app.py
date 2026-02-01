@@ -39,10 +39,19 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Configuration API
+# ⚠️ IMPORTANT: Utiliser l'URL Render, pas Railway
+RENDER_API_URL = "https://credit-scoring-api-k4q9.onrender.com"
+
 try:
-    API_URL = st.secrets.get("api_url", "https://credit-scoring-api-k4q9.onrender.com")
+    # Essayer le secret Streamlit d'abord
+    secret_url = st.secrets.get("api_url", None)
+    if secret_url and "render" in secret_url.lower():
+        API_URL = secret_url
+    else:
+        # Sinon utiliser Render par défaut
+        API_URL = RENDER_API_URL
 except:
-    API_URL = "https://credit-scoring-api-k4q9.onrender.com"
+    API_URL = RENDER_API_URL
 
 # === SIDEBAR ===
 
