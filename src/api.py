@@ -15,6 +15,7 @@ import pandas as pd
 import logging
 from datetime import datetime
 import mlflow
+import os
 import re
 import uvicorn
 
@@ -878,6 +879,7 @@ async def predict(client_request: ClientRequest):
     try:
         sk_id = client_request.sk_id_curr
         threshold = client_request.threshold or OPTIMAL_THRESHOLD
+<<<<<<< HEAD
 
         # Vérifications
         if not 0 <= threshold <= 1:
@@ -897,11 +899,31 @@ async def predict(client_request: ClientRequest):
         X = clean_column_names(X)
         X = X[sorted(X.columns)]
 
+=======
+        
+        if not 0 <= threshold <= 1:
+            raise HTTPException(status_code=400, detail="Seuil entre 0 et 1")
+        
+        if df_light is None:
+            raise HTTPException(status_code=503, detail="Données non chargées")
+        
+        if sk_id not in df_light.index:
+            raise HTTPException(status_code=404, detail=f"Client {sk_id} non trouvé")
+        
+        client_data = df_light.loc[sk_id]
+        features = client_data.to_dict()
+        
+        X = pd.DataFrame([features])
+        X = clean_column_names(X)
+        X = X[sorted(X.columns)]
+        
+>>>>>>> 8b11ff2ef9c5a49bbb8b9c4cbed37c17197f3978
         risk_prob = None
         importances = None
 
         if model_loaded and model is not None:
             try:
+<<<<<<< HEAD
                 # 1️⃣ Prédiction du risque
                 risk_prob = float(model.predict_proba(X)[0, 1])
 
@@ -922,6 +944,15 @@ async def predict(client_request: ClientRequest):
             risk_prob, importances = simulate_prediction(features)
 
         # Sécurité
+=======
+                risk_prob = float(model.predict_proba(X)[0, 1])
+                importances = feature_importances if feature_importances else {}
+            except:
+                risk_prob, importances = simulate_prediction(features)
+        else:
+            risk_prob, importances = simulate_prediction(features)
+        
+>>>>>>> 8b11ff2ef9c5a49bbb8b9c4cbed37c17197f3978
         if risk_prob is None:
             risk_prob, importances = simulate_prediction(features)
 
@@ -929,11 +960,16 @@ async def predict(client_request: ClientRequest):
         risk_prob = float(risk_prob)
         decision = "CRÉDIT REFUSÉ" if risk_prob >= threshold else "CRÉDIT ACCORDÉ"
         distance = abs(risk_prob - threshold)
+<<<<<<< HEAD
 
         # 5️⃣ Génération du Top 10 Features
         top_10 = get_top_10_features(importances)
 
         # 6️⃣ Retour de la réponse
+=======
+        top_10 = get_top_10_features(importances)
+        
+>>>>>>> 8b11ff2ef9c5a49bbb8b9c4cbed37c17197f3978
         return PredictionResponse(
             sk_id_curr=sk_id,
             risk_probability=risk_prob,
@@ -954,9 +990,14 @@ async def predict(client_request: ClientRequest):
     except HTTPException:
         raise
     except Exception as e:
+<<<<<<< HEAD
         logger.error(f"❌ Erreur predict: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+=======
+        logger.error(f"❌ Erreur: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+>>>>>>> 8b11ff2ef9c5a49bbb8b9c4cbed37c17197f3978
 
 @app.get("/clients")
 async def list_clients():
@@ -987,8 +1028,17 @@ async def model_info():
     }
 
 if __name__ == "__main__":
+<<<<<<< HEAD
     logger.info("🚀 API avec Interface Web")
     logger.info(f"📍 URL: http://localhost:8001")
     logger.info(f"🌐 Interface: http://localhost:8001/")
     
     uvicorn.run(app, host="0.0.0.0", port=8001, log_level="info")
+=======
+    port = int(os.environ.get('PORT', 8001))
+    logger.info("🚀 API avec Interface Web")
+    logger.info(f"📍 URL: http://localhost:{port}")
+    logger.info(f"🌐 Interface: http://localhost:{port}/")
+    
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+>>>>>>> 8b11ff2ef9c5a49bbb8b9c4cbed37c17197f3978
