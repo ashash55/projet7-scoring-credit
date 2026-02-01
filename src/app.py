@@ -70,81 +70,118 @@ if page == "🏠 Accueil":
     st.markdown("---")
     
     # Vérifier l'API
-    try:
-        response = requests.get(f"{API_URL}/health", timeout=5)
-        if response.status_code == 200:
-            st.success("✅ API connectée et fonctionnelle")
-            data = response.json()
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write(f"**Status:** {data['status']}")
-            with col2:
-                st.write(f"**Modèle chargé:** {'Oui' if data['model_loaded'] else 'Non'}")
-        else:
-            st.error(f"❌ API retourne: {response.status_code}")
-    except Exception as e:
-        st.error(f"❌ Impossible de se connecter à l'API: {str(e)}")
+    st.subheader("🔍 Vérification de la Connexion API")
+    
+    with st.expander("Détails de connexion", expanded=True):
+        st.write(f"**URL API:** `{API_URL}`")
+        
+        try:
+            st.write("⏳ Test de connexion en cours...")
+            response = requests.get(f"{API_URL}/health", timeout=5)
+            st.write(f"✅ **Status HTTP:** {response.status_code}")
+            
+            if response.status_code == 200:
+                st.success("✅ API connectée et fonctionnelle")
+                data = response.json()
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write(f"**Status:** {data.get('status', 'unknown')}")
+                    st.write(f"**Modèle chargé:** {'Oui ✅' if data.get('model_loaded') else 'Non ❌'}")
+                with col2:
+                    st.write(f"**Nom du modèle:** {data.get('model_name', 'N/A')}")
+                    st.write(f"**Seuil:** {data.get('threshold', 'N/A')}")
+                
+                # Afficher la réponse complète
+                with st.expander("📋 Réponse complète /health"):
+                    st.json(data)
+            else:
+                st.error(f"❌ API retourne le statut: {response.status_code}")
+                st.write(f"Réponse: {response.text}")
+        except requests.exceptions.Timeout:
+            st.error("❌ Timeout: L'API met trop de temps à répondre")
+        except requests.exceptions.ConnectionError as e:
+            st.error(f"❌ Erreur de connexion: {str(e)}")
+        except Exception as e:
+            st.error(f"❌ Erreur: {str(e)}")
+            st.write(f"Type: {type(e).__name__}")
     
     st.markdown("---")
     
     # Informations sur le modèle
     try:
-        response = requests.get(f"{API_URL}/info", timeout=5)
-        if response.status_code == 200:
-            info = response.json()
-            st.subheader("📋 Informations du Modèle")
+        st.subheader("📋 Récupération des Informations du Modèle")
+        with st.spinner("Chargement..."):
+            response = requests.get(f"{API_URL}/info", timeout=5)
+            st.write(f"✅ Réponse: {response.status_code}")
             
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Nom", info.get('model_name', 'LightGBM'))
-            with col2:
-                if 'model_version' in info and info['model_version']:
-                    st.metric("Version", info['model_version'])
-                else:
-                    st.metric("Version", "1.0.0")
-            with col3:
-                st.metric("Features", info.get('features_count', 20))
-            
-            st.markdown("---")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write(f"**Stratégie:** {info.get('strategy', 'class_weight')}")
-                st.write(f"**Seuil optimal:** {info.get('optimal_threshold', 0.46)}")
-            with col2:
-                if info.get('data_source'):
-                    st.write(f"**Source données:** {info['data_source']}")
-                total_clients = info.get('total_clients', 0)
-                if total_clients:
-                    st.write(f"**Clients:** {total_clients:,}")
-            
-            # Métriques du modèle
-            st.markdown("---")
-            st.subheader("📊 Métriques de Performance")
-            
-            metrics = info.get('metrics', {})
-            col1, col2, col3, col4, col5 = st.columns(5)
-            
-            with col1:
-                st.metric("F2-Score", f"{metrics.get('f2_score', 0):.4f}")
-            with col2:
-                st.metric("Recall", f"{metrics.get('recall', 0):.4f}")
-            with col3:
-                st.metric("Precision", f"{metrics.get('precision', 0):.4f}")
-            with col4:
-                st.metric("Accuracy", f"{metrics.get('accuracy', 0):.4f}")
-            with col5:
-                st.metric("AUC-ROC", f"{metrics.get('auc', 0):.4f}")
-            
-            # Liste des features
-            st.markdown("---")
-            with st.expander("📑 Liste des 20 Features"):
-                cols = st.columns(2)
-                for i, feature in enumerate(info.get('features', []), 1):
-                    with cols[(i-1) % 2]:
-                        st.write(f"{i:2}. `{feature}`")
+            if response.status_code == 200:
+                info = response.json()
+                
+                with st.expander("📋 Réponse brute /info", expanded=False):
+                    st.json(info)
+                
+                st.success("✅ Informations du modèle reçues")
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Nom", info.get('model_name', 'LightGBM'))
+                with col2:
+                    if 'model_version' in info and info['model_version']:
+                        st.metric("Version", info['model_version'])
+                    else:
+                        st.metric("Version", "1.0.0")
+                with col3:
+                    st.metric("Features", info.get('features_count', 20))
+                
+                st.markdown("---")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write(f"**Stratégie:** {info.get('strategy', 'class_weight')}")
+                    st.write(f"**Seuil optimal:** {info.get('optimal_threshold', 0.46)}")
+                with col2:
+                    if info.get('data_source'):
+                        st.write(f"**Source données:** {info['data_source']}")
+                    total_clients = info.get('total_clients', 0)
+                    if total_clients:
+                        st.write(f"**Clients:** {total_clients:,}")
+                
+                # Métriques du modèle
+                st.markdown("---")
+                st.subheader("📊 Métriques de Performance")
+                
+                metrics = info.get('metrics', {})
+                col1, col2, col3, col4, col5 = st.columns(5)
+                
+                with col1:
+                    st.metric("F2-Score", f"{metrics.get('f2_score', 0):.4f}")
+                with col2:
+                    st.metric("Recall", f"{metrics.get('recall', 0):.4f}")
+                with col3:
+                    st.metric("Precision", f"{metrics.get('precision', 0):.4f}")
+                with col4:
+                    st.metric("Accuracy", f"{metrics.get('accuracy', 0):.4f}")
+                with col5:
+                    st.metric("AUC-ROC", f"{metrics.get('auc', 0):.4f}")
+                
+                # Liste des features
+                st.markdown("---")
+                with st.expander("📑 Liste des 20 Features"):
+                    cols = st.columns(2)
+                    for i, feature in enumerate(info.get('features', []), 1):
+                        with cols[(i-1) % 2]:
+                            st.write(f"{i:2}. `{feature}`")
+            else:
+                st.error(f"❌ API retourne: {response.status_code}")
+                st.write(f"Contenu: {response.text}")
+    except requests.exceptions.Timeout:
+        st.error("⏱️ Timeout: L'API met trop de temps à répondre")
+    except requests.exceptions.ConnectionError:
+        st.error("❌ Erreur de connexion à l'API")
     except Exception as e:
         st.warning(f"⚠️ Impossible de charger les infos: {str(e)}")
+        st.write(f"Erreur: {type(e).__name__}")
 
 # === PAGE: PRÉDICTION CLIENT ===
 
@@ -174,25 +211,39 @@ elif page == "📊 Prédiction Client":
                     continue
             
             # Si fichier local non trouvé, charger depuis l'API
+            st.info(f"🔄 Chargement des données depuis l'API: {API_URL}/clients")
+            
             try:
                 response = requests.get(f"{API_URL}/clients", timeout=10)
+                st.write(f"📡 Réponse API: Status {response.status_code}")
+                
                 if response.status_code == 200:
                     data = response.json()
+                    st.write(f"📊 Données reçues: {data}")
+                    
                     clients_list = data.get('clients', [])
                     
                     if clients_list:
                         # Créer un DataFrame avec les IDs des clients
                         df = pd.DataFrame({'SK_ID_CURR': clients_list})
-                        st.info("✅ Données chargées depuis l'API")
+                        st.success(f"✅ Données chargées depuis l'API: {len(clients_list)} clients")
                         return df
                     else:
-                        st.warning("⚠️ Aucun client disponible")
+                        st.warning("⚠️ Aucun client disponible dans la réponse")
                         return None
                 else:
                     st.error(f"❌ API retourne: {response.status_code}")
+                    st.write(f"Contenu: {response.text}")
                     return None
+            except requests.exceptions.Timeout:
+                st.error("❌ Timeout: L'API met trop de temps à répondre")
+                return None
+            except requests.exceptions.ConnectionError as ce:
+                st.error(f"❌ Erreur de connexion: {str(ce)}")
+                return None
             except Exception as api_error:
-                st.error(f"❌ Impossible de charger les données: {str(api_error)}")
+                st.error(f"❌ Erreur API: {str(api_error)}")
+                st.write(f"Type d'erreur: {type(api_error).__name__}")
                 return None
                 
         except Exception as e:
