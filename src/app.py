@@ -156,13 +156,45 @@ elif page == "📊 Prédiction Client":
     
     @st.cache_data
     def load_data_light():
-        """Charge les données light depuis le CSV"""
+        """Charge les données light depuis le CSV ou l'API"""
         try:
-            df = pd.read_csv(r"C:\ashash\7\projet7-scoring-credit\data\data_mini_features.csv")
-            return df
-        except FileNotFoundError:
-            st.error("❌ Fichier data/data_mini_features.csv non trouvé")
-            return None
+            # Essayer d'abord les chemins locaux
+            possible_paths = [
+                "data/data_mini_features.csv",
+                "./data/data_mini_features.csv",
+                "src/../data/data_mini_features.csv",
+            ]
+            
+            for path in possible_paths:
+                try:
+                    df = pd.read_csv(path)
+                    st.info("✅ Données chargées localement")
+                    return df
+                except FileNotFoundError:
+                    continue
+            
+            # Si fichier local non trouvé, charger depuis l'API
+            try:
+                response = requests.get(f"{API_URL}/clients", timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                    clients_list = data.get('clients', [])
+                    
+                    if clients_list:
+                        # Créer un DataFrame avec les IDs des clients
+                        df = pd.DataFrame({'SK_ID_CURR': clients_list})
+                        st.info("✅ Données chargées depuis l'API")
+                        return df
+                    else:
+                        st.warning("⚠️ Aucun client disponible")
+                        return None
+                else:
+                    st.error(f"❌ API retourne: {response.status_code}")
+                    return None
+            except Exception as api_error:
+                st.error(f"❌ Impossible de charger les données: {str(api_error)}")
+                return None
+                
         except Exception as e:
             st.error(f"❌ Erreur: {e}")
             return None
