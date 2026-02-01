@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: credit-scoring-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    region: fra
+    plan: free
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+    healthCheckPath: /health
+    autoDeploy: true

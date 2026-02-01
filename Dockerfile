@@ -1,7 +1,7 @@
 # Dockerfile - Credit Scoring API
-# Build multistage: Production optimisé pour Railway
+# Optimisé pour Render.com
 
-FROM python:3.9-slim as base
+FROM python:3.9-slim
 
 WORKDIR /app
 
@@ -11,21 +11,11 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Stage 1: Builder
-FROM base as builder
-
+# Copier requirements
 COPY requirements.txt .
-RUN pip install --user --no-cache-dir -r requirements.txt
 
-# Stage 2: Runtime
-FROM base as runtime
-
-# Copier les packages Python depuis le builder
-COPY --from=builder /root/.local /root/.local
-
-# Définir le PATH
-ENV PATH=/root/.local/bin:$PATH
-ENV PYTHONUNBUFFERED=1
+# Installer Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copier le code
 COPY . .
@@ -33,12 +23,12 @@ COPY . .
 # Créer les dossiers de logs
 RUN mkdir -p logs
 
-# Expose port (Railway attribue le port via variable d'env PORT)
+# Expose port
 EXPOSE 8080
 
-# Health check pour API
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:${PORT:-8080}/health || exit 1
 
-# Commande par défaut: Lancer l'API uniquement
-CMD uvicorn src.api:app --host 0.0.0.0 --port ${PORT:-8080}
+# Commande de démarrage - Utiliser la variable PORT de Render
+CMD exec uvicorn src.api:app --host 0.0.0.0 --port ${PORT:-8080} --log-level info
