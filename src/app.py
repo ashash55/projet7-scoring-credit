@@ -40,9 +40,9 @@ st.markdown("""
 
 # Configuration API
 try:
-    API_URL = st.secrets.get("api_url", "http://localhost:8080")
+    API_URL = st.secrets.get("api_url", "https://credit-scoring-api-k4q9.onrender.com")
 except:
-    API_URL = "http://localhost:8080"
+    API_URL = "https://credit-scoring-api-k4q9.onrender.com"
 
 # === SIDEBAR ===
 
@@ -153,14 +153,15 @@ elif page == "📊 Prédiction Client":
     st.markdown("---")
     
     # Charger le dataset light
+    
     @st.cache_data
     def load_data_light():
         """Charge les données light depuis le CSV"""
         try:
-            df = pd.read_csv("data/data_light_features.csv")
+            df = pd.read_csv(r"C:\ashash\7\projet7-scoring-credit\data\data_mini_features.csv")
             return df
         except FileNotFoundError:
-            st.error("❌ Fichier data/data_light_features.csv non trouvé")
+            st.error("❌ Fichier data/data_mini_features.csv non trouvé")
             return None
         except Exception as e:
             st.error(f"❌ Erreur: {e}")
@@ -353,7 +354,7 @@ elif page == "📊 Prédiction Client":
                             st.error(f"❌ Erreur API: {response.status_code}")
                     except requests.exceptions.ConnectionError:
                         st.error(f"❌ Impossible de se connecter à {API_URL}")
-                        st.info("💡 Démarrez l'API: `python -m uvicorn src.api:app --host 0.0.0.0 --port 8080`")
+                        st.info("💡 Démarrez l'API: `python -m uvicorn src.api:app --host 0.0.0.0 --port 8001`")
                     except Exception as e:
                         st.error(f"❌ Erreur: {str(e)}")
     else:
@@ -450,8 +451,8 @@ elif page == "📋 Documentation":
     - Consultez les métriques en temps réel
     
     ### 3. API Documentation
-    - [API Swagger](http://localhost:8080/docs)
-    - [API ReDoc](http://localhost:8080/redoc)
+    - [API Swagger](https://credit-scoring-api-k4q9.onrender.com/docs)
+    - [API ReDoc](https://credit-scoring-api-k4q9.onrender.com/redoc)
     """)
     
     try:
