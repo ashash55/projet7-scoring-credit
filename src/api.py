@@ -230,6 +230,11 @@ def initialize_shap_explainer():
         return False
 
 def simulate_prediction(features: Dict[str, float]) -> tuple:
+    """
+    Simule une prédiction avec importances dynamiques basées sur les features du client.
+    Les importances varient selon les valeurs spécifiques du client.
+    """
+    # Prédiction basée sur quelques features clés
     risk_score = 0.5
     if 'EXT_SOURCE_2' in features:
         risk_score -= features.get('EXT_SOURCE_2', 0) * 0.25
@@ -238,15 +243,62 @@ def simulate_prediction(features: Dict[str, float]) -> tuple:
     
     risk_prob = max(0, min(1, risk_score))
     
-    simulated_importances = {
-        'EXT_SOURCE_2': 0.20,
-        'DEBT_RATIO': 0.18,
-        'PAYMENT_RATE': 0.15,
-        'INSTAL_DAYS_PAST_DUE_MEAN': 0.12,
-        'AGE': 0.10
+    # Calculer les importances DYNAMIQUES basées sur les features du client
+    # Stratégie: importance = valeur normalisée + écart à la moyenne
+    
+    # Définir les moyennes approximatives pour chaque feature
+    feature_means = {
+        'EXT_SOURCE_2': 0.5,
+        'DEBT_RATIO': 0.5,
+        'PAYMENT_RATE': 0.3,
+        'INSTAL_DAYS_PAST_DUE_MEAN': 10.0,
+        'AGE': 40.0,
+        'AMT_CREDIT': 100000.0,
+        'AMT_INCOME_TOTAL': 150000.0,
+        'DAYS_EMPLOYED': 1000.0,
+        'DAYS_BIRTH': 12000.0,
+        'EXT_SOURCE_1': 0.5
     }
     
-    return float(risk_prob), simulated_importances
+    # Calculer les écarts normalisés pour chaque feature
+    importance_dict = {}
+    
+    for feature_name, feature_value in features.items():
+        if feature_name in feature_means:
+            mean_val = feature_means[feature_name]
+            
+            # Éviter division par zéro
+            if mean_val != 0:
+                # Calcul d'importance basée sur l'écart à la moyenne
+                # Plus l'écart est grand, plus l'importance est élevée
+                ratio = abs(feature_value - mean_val) / max(abs(mean_val), 1.0)
+                
+                # Normaliser entre 0 et 1
+                importance = min(0.3, ratio * 0.1)  # Capper à 0.3
+            else:
+                importance = abs(feature_value) * 0.05
+        else:
+            # Pour les autres features, importance basée sur la valeur absolue normalisée
+            importance = min(0.15, abs(feature_value) * 0.001)
+        
+        if importance > 0.01:  # Seuil minimum
+            importance_dict[feature_name] = importance
+    
+    # Normaliser les importances pour qu'elles somment à near 1
+    total_importance = sum(importance_dict.values())
+    if total_importance > 0:
+        importance_dict = {k: v / total_importance for k, v in importance_dict.items()}
+    else:
+        # Fallback: importances de secours
+        importance_dict = {
+            'EXT_SOURCE_2': 0.20,
+            'DEBT_RATIO': 0.18,
+            'PAYMENT_RATE': 0.15,
+            'INSTAL_DAYS_PAST_DUE_MEAN': 0.12,
+            'AGE': 0.10
+        }
+    
+    return float(risk_prob), importance_dict
 
 def get_top_10_features(features_dict: Dict) -> List[FeatureImportance]:
     if not features_dict:
