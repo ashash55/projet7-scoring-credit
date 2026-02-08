@@ -1147,9 +1147,30 @@ async def predict(client_request: ClientRequest):
         
         if model_loaded and model is not None:
             try:
+                # Prédiction
                 risk_prob = float(model.predict_proba(X)[0, 1])
-                importances = feature_importances if feature_importances else {}
-            except:
+
+                # Essayer d'extraire les importances spécifiques au client via SHAP
+                try:
+                    explainer = shap.TreeExplainer(model)
+                    shap_values = explainer.shap_values(X)
+
+                    # shap_values peut être une liste (par classe) ou un array
+                    if isinstance(shap_values, list) and len(shap_values) > 1:
+                        shap_client = shap_values[1][0]
+                    else:
+                        # fallback: prendre la première dimension
+                        shap_client = np.array(shap_values)[0]
+                        if shap_client.ndim > 1:
+                            shap_client = shap_client[0]
+
+                    top_features_idx = np.argsort(-np.abs(shap_client))[:10]
+                    importances = {X.columns[i]: float(shap_client[i]) for i in top_features_idx}
+                except Exception:
+                    # Si SHAP échoue, fallback sur importances globales si présentes
+                    importances = feature_importances if feature_importances else {}
+
+            except Exception:
                 risk_prob, importances = simulate_prediction(features)
         else:
             risk_prob, importances = simulate_prediction(features)
