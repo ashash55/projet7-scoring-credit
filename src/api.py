@@ -202,6 +202,7 @@ def initialize_shap_explainer():
             return False
         
         logger.info("🔄 Initialisation SHAP Explainer...")
+        logger.info(f"📊 Model type: {type(model).__name__}")
         
         # Utiliser un sous-ensemble aléatoire pour le background
         sample_size = min(100, len(df_light))
@@ -210,15 +211,25 @@ def initialize_shap_explainer():
         
         # Créer l'explainer SHAP TreeExplainer pour LightGBM
         try:
-            explainer = shap.TreeExplainer(model)
+            # Si c'est un Pipeline, essayer d'accéder au classifier interne
+            model_for_shap = model
+            if hasattr(model, 'named_steps'):
+                classifier = model.named_steps.get('classifier')
+                if classifier:
+                    logger.info(f"📊 Extraction classifier du pipeline: {type(classifier).__name__}")
+                    model_for_shap = classifier
+            
+            logger.info(f"🔄 TreeExplainer sur {type(model_for_shap).__name__}...")
+            explainer = shap.TreeExplainer(model_for_shap)
             logger.info(f"✅ SHAP TreeExplainer initialisé avec {sample_size} exemples")
             return True
         except Exception as e:
-            logger.warning(f"⚠️ TreeExplainer échoué: {e}, utilisation KernelExplainer")
+            logger.warning(f"⚠️ TreeExplainer échoué: {e}")
+            logger.info("🔄 Basculement sur KernelExplainer (plus lent)...")
             # Fallback sur KernelExplainer si TreeExplainer échoue
             explainer = shap.KernelExplainer(
                 lambda x: model.predict_proba(x)[:, 1],
-                X_background
+                X_background.values[:20]  # Petit background pour KernelExplainer (très lent)
             )
             logger.info("✅ SHAP KernelExplainer initialisé")
             return True
@@ -1194,8 +1205,17 @@ async def predict(client_request: ClientRequest):
         X = clean_column_names(X)
         X = X[sorted(X.columns)]
         
-        logger.info(f"📊 Client {sk_id}: X shape={X.shape}, columns={X.shape[1]}, dtypes={X.dtypes.unique()}")
-        logger.info(f"📊 Model type: {type(model).__name__}, Model features: {getattr(model, 'n_features_', 'N/A')}")
+        # S'assurer que X a les bons noms de features
+        if hasattr(model, 'named_steps'):
+            # Pipeline: récupérer les features du preprocessing
+            preprocessor = model.named_steps.get('preprocessor')
+            if preprocessor:
+                feature_names = preprocessor.get_feature_names_out()
+                if len(feature_names) == X.shape[1]:
+                    X.columns = feature_names
+                    logger.info(f"✅ Feature names du preprocessing appliquées")
+        
+        logger.info(f"📊 Client {sk_id}: X shape={X.shape}, columns={list(X.columns)[:5]}...")
         
         risk_prob = None
         importances = None
@@ -1211,15 +1231,19 @@ async def predict(client_request: ClientRequest):
 
             # SHAP est OBLIGATOIRE - pas de fallback
             try:
-                logger.info(f"🔄 Initialisation SHAP (client {sk_id})...")
-                logger.info(f"📊 X dtypes: {X.dtypes.to_dict()}")
-                logger.info(f"📊 X sample: {X.iloc[0, :5].to_dict()}")
+                global explainer
+                logger.info(f"🔄 SHAP calcul (client {sk_id})...")
+                logger.info(f"📊 X shape={X.shape}, dtypes={X.dtypes.unique()}")
                 
-                explainer = shap.TreeExplainer(model)
-                logger.info(f"✅ TreeExplainer créé")
+                # Utiliser l'explainer global (initialisé au startup)
+                if explainer is None:
+                    logger.error("❌ SHAP Explainer non initialisé au startup")
+                    raise Exception("SHAP Explainer not initialized")
+                
+                logger.info(f"📊 Explainer type: {type(explainer).__name__}")
                 
                 shap_values = explainer.shap_values(X)
-                logger.info(f"✅ SHAP values calculées. Type: {type(shap_values)}")
+                logger.info(f"✅ SHAP values calculées. Type: {type(shap_values)}, Shape: {np.array(shap_values).shape if not isinstance(shap_values, list) else f'list[{len(shap_values)}]'}")
                 
                 # Gérer différentes structures de shap_values
                 if isinstance(shap_values, list):
