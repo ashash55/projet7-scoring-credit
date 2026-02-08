@@ -1198,37 +1198,50 @@ async def predict(client_request: ClientRequest):
         importances = None
         
         if model_loaded and model is not None:
+            # Prédiction
+            risk_prob = float(model.predict_proba(X)[0, 1])
+
+            # SHAP est OBLIGATOIRE - pas de fallback
             try:
-                # Prédiction
-                risk_prob = float(model.predict_proba(X)[0, 1])
-
-                # Essayer d'extraire les importances spécifiques au client via SHAP
-                try:
-                    explainer = shap.TreeExplainer(model)
-                    shap_values = explainer.shap_values(X)
-
-                    # shap_values peut être une liste (par classe) ou un array
-                    if isinstance(shap_values, list) and len(shap_values) > 1:
-                        shap_client = shap_values[1][0]
+                explainer = shap.TreeExplainer(model)
+                shap_values = explainer.shap_values(X)
+                
+                # Gérer différentes structures de shap_values
+                if isinstance(shap_values, list):
+                    # Pour multi-class: liste [class_0_shap, class_1_shap, ...]
+                    if len(shap_values) > 1:
+                        # Prendre la classe du risque (classe 1)
+                        shap_client = np.array(shap_values[1])[0]
                     else:
-                        # fallback: prendre la première dimension
-                        shap_client = np.array(shap_values)[0]
-                        if shap_client.ndim > 1:
-                            shap_client = shap_client[0]
+                        shap_client = np.array(shap_values[0])[0]
+                else:
+                    # Array direct
+                    shap_array = np.array(shap_values)
+                    if shap_array.ndim == 2:
+                        shap_client = shap_array[0]
+                    else:
+                        shap_client = shap_array
+                
+                # Calculer les importances (valeurs absolues des SHAP)
+                shap_importance = np.abs(shap_client)
+                
+                # Top 10 features
+                top_features_idx = np.argsort(-shap_importance)[:10]
+                importances = {
+                    X.columns[i]: float(shap_importance[i]) 
+                    for i in top_features_idx if shap_importance[i] > 0
+                }
+                
+                logger.info(f"✅ SHAP importances (client {sk_id}): {list(importances.keys())[:5]}")
 
-                    top_features_idx = np.argsort(-np.abs(shap_client))[:10]
-                    importances = {X.columns[i]: float(shap_client[i]) for i in top_features_idx}
-                except Exception:
-                    # Si SHAP échoue, fallback sur importances globales si présentes
-                    importances = feature_importances if feature_importances else {}
-
-            except Exception:
-                risk_prob, importances = simulate_prediction(features)
+            except Exception as e:
+                logger.error(f"❌ SHAP ÉCHOUÉ (client {sk_id}): {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
+                raise HTTPException(status_code=500, detail=f"SHAP calculation failed: {str(e)}")
         else:
-            risk_prob, importances = simulate_prediction(features)
-        
-        if risk_prob is None:
-            risk_prob, importances = simulate_prediction(features)
+            logger.error("❌ Modèle non chargé - SHAP impossible")
+            raise HTTPException(status_code=503, detail="Modèle non chargé - impossible de calculer les importances SHAP")
         
         risk_prob = float(risk_prob)
         decision = "CRÉDIT REFUSÉ" if risk_prob >= threshold else "CRÉDIT ACCORDÉ"
