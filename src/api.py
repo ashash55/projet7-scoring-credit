@@ -1194,36 +1194,57 @@ async def predict(client_request: ClientRequest):
         X = clean_column_names(X)
         X = X[sorted(X.columns)]
         
+        logger.info(f"📊 Client {sk_id}: X shape={X.shape}, columns={X.shape[1]}, dtypes={X.dtypes.unique()}")
+        logger.info(f"📊 Model type: {type(model).__name__}, Model features: {getattr(model, 'n_features_', 'N/A')}")
+        
         risk_prob = None
         importances = None
         
         if model_loaded and model is not None:
             # Prédiction
-            risk_prob = float(model.predict_proba(X)[0, 1])
+            try:
+                risk_prob = float(model.predict_proba(X)[0, 1])
+                logger.info(f"✅ Prédiction: {risk_prob:.4f} (client {sk_id})")
+            except Exception as e:
+                logger.error(f"❌ Prédiction échouée: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
 
             # SHAP est OBLIGATOIRE - pas de fallback
             try:
+                logger.info(f"🔄 Initialisation SHAP (client {sk_id})...")
+                logger.info(f"📊 X dtypes: {X.dtypes.to_dict()}")
+                logger.info(f"📊 X sample: {X.iloc[0, :5].to_dict()}")
+                
                 explainer = shap.TreeExplainer(model)
+                logger.info(f"✅ TreeExplainer créé")
+                
                 shap_values = explainer.shap_values(X)
+                logger.info(f"✅ SHAP values calculées. Type: {type(shap_values)}")
                 
                 # Gérer différentes structures de shap_values
                 if isinstance(shap_values, list):
+                    logger.info(f"📋 SHAP est une liste de {len(shap_values)} arrays")
                     # Pour multi-class: liste [class_0_shap, class_1_shap, ...]
                     if len(shap_values) > 1:
                         # Prendre la classe du risque (classe 1)
                         shap_client = np.array(shap_values[1])[0]
+                        logger.info(f"✅ Utilisation shap_values[1] (class 1 - risque)")
                     else:
                         shap_client = np.array(shap_values[0])[0]
+                        logger.info(f"⚠️  Utilisation shap_values[0] (une seule classe)")
                 else:
                     # Array direct
                     shap_array = np.array(shap_values)
+                    logger.info(f"📋 SHAP est un array de shape {shap_array.shape}")
                     if shap_array.ndim == 2:
                         shap_client = shap_array[0]
+                        logger.info(f"✅ Extraction première ligne")
                     else:
                         shap_client = shap_array
                 
                 # Calculer les importances (valeurs absolues des SHAP)
                 shap_importance = np.abs(shap_client)
+                logger.info(f"✅ SHAP importance shape: {shap_importance.shape}, non-zero: {np.count_nonzero(shap_importance)}")
                 
                 # Top 10 features
                 top_features_idx = np.argsort(-shap_importance)[:10]
