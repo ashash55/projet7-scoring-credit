@@ -14,11 +14,11 @@ import numpy as np
 import pandas as pd
 import logging
 from datetime import datetime
-import mlflow
 import os
 import re
 import uvicorn
 import shap
+import json
 
 # ============================================================================
 # CONFIGURATION
@@ -73,6 +73,18 @@ class FeatureImportance(BaseModel):
     importance_value: float
     rank: int
 
+class ShapValue(BaseModel):
+    feature_name: str
+    contribution: float
+    feature_value: float
+
+class ExplanationResponse(BaseModel):
+    sk_id_curr: int
+    base_value: float
+    prediction_value: float
+    shap_values: List[ShapValue]
+    feature_values: Dict[str, float]
+
 class PredictionResponse(BaseModel):
     sk_id_curr: int
     risk_probability: float
@@ -90,6 +102,8 @@ model = None
 feature_importances = None
 model_loaded = False
 df_light = None
+explainer = None
+X_background = None  # Pour SHAP TreeExplainer ou KernelExplainer
 
 # ============================================================================
 # UTILITIES
@@ -106,7 +120,7 @@ def clean_column_names(df: pd.DataFrame) -> pd.DataFrame:
 
 def load_model():
     """Charge le meilleur modèle LightGBM depuis MLflow"""
-    global model, feature_importances, model_loaded, model_name
+    global model, feature_importances, model_loaded, model_name, explainer, X_background
     
     try:
         logger.info("🔄 Chargement du modèle LightGBM...")
@@ -178,6 +192,43 @@ def load_model():
         model_loaded = False
         return False
 
+def initialize_shap_explainer():
+    """Initialise l'explainer SHAP avec un sous-ensemble des données"""
+    global explainer, X_background, df_light
+    
+    try:
+        if model is None or df_light is None:
+            logger.warning("⚠️ Modèle ou données non chargées, SHAP non initialisé")
+            return False
+        
+        logger.info("🔄 Initialisation SHAP Explainer...")
+        
+        # Utiliser un sous-ensemble aléatoire pour le background
+        sample_size = min(100, len(df_light))
+        X_background = df_light.sample(n=sample_size, random_state=42)
+        X_background = clean_column_names(X_background)
+        
+        # Créer l'explainer SHAP TreeExplainer pour LightGBM
+        try:
+            explainer = shap.TreeExplainer(model)
+            logger.info(f"✅ SHAP TreeExplainer initialisé avec {sample_size} exemples")
+            return True
+        except Exception as e:
+            logger.warning(f"⚠️ TreeExplainer échoué: {e}, utilisation KernelExplainer")
+            # Fallback sur KernelExplainer si TreeExplainer échoue
+            explainer = shap.KernelExplainer(
+                lambda x: model.predict_proba(x)[:, 1],
+                X_background
+            )
+            logger.info("✅ SHAP KernelExplainer initialisé")
+            return True
+    
+    except Exception as e:
+        logger.error(f"❌ Erreur SHAP: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
+
 def simulate_prediction(features: Dict[str, float]) -> tuple:
     risk_score = 0.5
     if 'EXT_SOURCE_2' in features:
@@ -217,10 +268,9 @@ def get_top_10_features(features_dict: Dict) -> List[FeatureImportance]:
 # ============================================================================
 @app.on_event("startup")
 async def startup_event():
-    global df_light, model_loaded
+    global df_light
     logger.info("🚀 Démarrage API...")
     
-    # Charger les données
     possible_paths = [
         "data/data_mini_features.csv",
         "./data/data_mini_features.csv",
@@ -233,7 +283,6 @@ async def startup_event():
         path_obj = Path(path) if isinstance(path, str) else path
         if path_obj.exists():
             data_path = str(path_obj)
-            logger.info(f"📂 Données trouvées: {data_path}")
             break
     
     if data_path:
@@ -241,19 +290,11 @@ async def startup_event():
             df_light = pd.read_csv(data_path, index_col='SK_ID_CURR')
             logger.info(f"✅ Données chargées: {df_light.shape}")
         except Exception as e:
-            logger.error(f"❌ Erreur chargement données: {e}")
+            logger.error(f"❌ Erreur données: {e}")
             df_light = None
-    else:
-        logger.warning("⚠️ Données CSV non trouvées - Mode simulation)")
-        df_light = None
     
-    # Charger le modèle (peut échouer, c'est ok)
-    try:
-        load_model()
-        logger.info("✅ Modèle chargé avec succès")
-    except Exception as e:
-        logger.warning(f"⚠️ Modèle non disponible: {e} - Mode simulation activé")
-        model_loaded = False
+    load_model()
+    initialize_shap_explainer()
 
 # ============================================================================
 # INTERFACE WEB PRINCIPALE
@@ -578,6 +619,100 @@ async def home():
             border-color: #667eea;
         }
         
+        .waterfall-container {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            border: 2px solid #667eea;
+        }
+        
+        .waterfall-title {
+            color: #667eea;
+            font-size: 1.3em;
+            font-weight: bold;
+            margin-bottom: 20px;
+        }
+        
+        .waterfall-plot {
+            width: 100%;
+            height: 500px;
+            border-radius: 8px;
+            background: white;
+            padding: 15px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .waterfall-bar {
+            display: flex;
+            align-items: center;
+            margin-bottom: 8px;
+            padding: 8px;
+            background: white;
+            border-radius: 5px;
+        }
+        
+        .waterfall-label {
+            min-width: 150px;
+            font-weight: 600;
+            font-size: 0.9em;
+            color: #333;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        .waterfall-bar-container {
+            flex: 1;
+            height: 25px;
+            background: #e9ecef;
+            border-radius: 5px;
+            margin: 0 10px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .waterfall-bar-positive {
+            background: linear-gradient(90deg, #28a745, #20c997);
+            height: 100%;
+            border-radius: 5px;
+            transition: width 0.3s ease;
+        }
+        
+        .waterfall-bar-negative {
+            background: linear-gradient(90deg, #dc3545, #fd7e14);
+            height: 100%;
+            border-radius: 5px;
+            transition: width 0.3s ease;
+        }
+        
+        .waterfall-value {
+            min-width: 80px;
+            text-align: right;
+            font-weight: 600;
+            font-size: 0.9em;
+            color: #333;
+        }
+        
+        .waterfall-legend {
+            display: flex;
+            gap: 30px;
+            margin-top: 20px;
+            padding-top: 15px;
+            border-top: 1px solid #ddd;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .legend-box {
+            width: 20px;
+            height: 20px;
+            border-radius: 3px;
+        }
+        
         @media (max-width: 768px) {
             .header h1 {
                 font-size: 1.8em;
@@ -590,6 +725,11 @@ async def home():
             .result-header {
                 flex-direction: column;
                 gap: 15px;
+            }
+            
+            .waterfall-label {
+                min-width: 100px;
+                font-size: 0.8em;
             }
         }
     </style>
@@ -702,6 +842,17 @@ async def home():
                     <strong>Informations Modèle:</strong>
                     <div id="modelInfo" style="margin-top: 10px; color: #666;"></div>
                 </div>
+                
+                <!-- Waterfall SHAP Section -->
+                <div class="waterfall-container" id="waterfallSection" style="display: none;">
+                    <div class="waterfall-title">📊 Waterfall SHAP - Explication Locale</div>
+                    <button class="btn" onclick="loadWaterfall()">🔄 Charger Waterfall</button>
+                    <div class="loading" id="waterfallLoading" style="margin-top: 20px; display: none;">
+                        <div class="spinner"></div>
+                        <p>Calcul des SHAP values...</p>
+                    </div>
+                    <div class="waterfall-plot" id="waterfallPlot" style="display: none;"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -785,6 +936,9 @@ async def home():
             const resultDiv = document.getElementById('result');
             resultDiv.style.display = 'block';
             
+            // Afficher la section waterfall
+            document.getElementById('waterfallSection').style.display = 'block';
+            
             // Set decision styling
             const isApproved = data.decision === 'CRÉDIT ACCORDÉ';
             resultDiv.className = isApproved ? 'result-approved' : 'result-rejected';
@@ -866,6 +1020,86 @@ async def home():
             document.getElementById('result').style.display = 'none';
             document.getElementById('clientId').value = '';
             document.getElementById('clientsSection').style.display = 'none';
+            document.getElementById('waterfallSection').style.display = 'none';
+        }
+        
+        async function loadWaterfall() {
+            const clientId = parseInt(document.getElementById('clientId').value);
+            
+            if (!clientId) {
+                alert('Veuillez d\'abord analyser un client');
+                return;
+            }
+            
+            document.getElementById('waterfallLoading').style.display = 'block';
+            document.getElementById('waterfallPlot').style.display = 'none';
+            
+            try {
+                const response = await fetch('/explain', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        sk_id_curr: clientId,
+                        features: {},
+                        threshold: 0.46
+                    })
+                });
+                
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Erreur calcul SHAP');
+                }
+                
+                const data = await response.json();
+                displayWaterfall(data);
+                
+            } catch (error) {
+                alert('Erreur: ' + error.message);
+            } finally {
+                document.getElementById('waterfallLoading').style.display = 'none';
+            }
+        }
+        
+        function displayWaterfall(data) {
+            const waterfallPlot = document.getElementById('waterfallPlot');
+            waterfallPlot.innerHTML = '';
+            
+            // Trier par contribution absolue et ne garder que le top 10
+            const topShapValues = data.shap_values.slice(0, 10);
+            
+            // Créer le graphique waterfall
+            const waterfallHtml = topShapValues.map(shap => {
+                const isPositive = shap.contribution >= 0;
+                const width = Math.abs(shap.contribution) * 100; // Normaliser pour affichage
+                const barClass = isPositive ? 'waterfall-bar-positive' : 'waterfall-bar-negative';
+                const label = `${shap.feature_name} (${shap.feature_value.toFixed(2)})`;
+                
+                return `
+                    <div class="waterfall-bar">
+                        <div class="waterfall-label" title="${label}">${label}</div>
+                        <div class="waterfall-bar-container">
+                            <div class="${barClass}" style="width: ${Math.min(width, 100)}%;"></div>
+                        </div>
+                        <div class="waterfall-value">${shap.contribution > 0 ? '+' : ''}${shap.contribution.toFixed(4)}</div>
+                    </div>
+                `;
+            }).join('');
+            
+            const legendHtml = `
+                <div class="waterfall-legend">
+                    <div style="padding: 10px; background: white; border-radius: 5px;">
+                        <strong>Prédiction:</strong> ${(data.prediction_value * 100).toFixed(2)}%
+                    </div>
+                    <div style="padding: 10px; background: white; border-radius: 5px;">
+                        <strong>Base Value:</strong> ${(data.base_value * 100).toFixed(2)}%
+                    </div>
+                </div>
+            `;
+            
+            waterfallPlot.innerHTML = waterfallHtml + legendHtml;
+            waterfallPlot.style.display = 'block';
         }
     </script>
 </body>
@@ -891,62 +1125,43 @@ async def predict(client_request: ClientRequest):
     try:
         sk_id = client_request.sk_id_curr
         threshold = client_request.threshold or OPTIMAL_THRESHOLD
-
-        # Vérifications
+        
         if not 0 <= threshold <= 1:
             raise HTTPException(status_code=400, detail="Seuil entre 0 et 1")
-
+        
         if df_light is None:
             raise HTTPException(status_code=503, detail="Données non chargées")
-
+        
         if sk_id not in df_light.index:
             raise HTTPException(status_code=404, detail=f"Client {sk_id} non trouvé")
-
-        # Extraire données du client
+        
         client_data = df_light.loc[sk_id]
         features = client_data.to_dict()
-
+        
         X = pd.DataFrame([features])
         X = clean_column_names(X)
         X = X[sorted(X.columns)]
-
+        
         risk_prob = None
         importances = None
-
+        
         if model_loaded and model is not None:
             try:
-                # 1️⃣ Prédiction du risque
                 risk_prob = float(model.predict_proba(X)[0, 1])
-
-                # 2️⃣ Calcul des SHAP values
-                explainer = shap.TreeExplainer(model)
-                shap_values = explainer.shap_values(X)  # [0]=classe 0, [1]=classe 1
-
-                # 3️⃣ Top 10 features en importance absolue pour la classe "risque de défaut"
-                shap_vals_client = shap_values[1][0]  # valeurs SHAP pour le client
-                top_features_idx = np.argsort(-np.abs(shap_vals_client))[:10]
-                importances = {X.columns[i]: shap_vals_client[i] for i in top_features_idx}
-
-            except Exception as e:
-                logger.warning(f"⚠️ Erreur SHAP ou prédiction: {e}")
+                importances = feature_importances if feature_importances else {}
+            except:
                 risk_prob, importances = simulate_prediction(features)
         else:
-            # Mode simulation si modèle non chargé
             risk_prob, importances = simulate_prediction(features)
-
-        # Sécurité
+        
         if risk_prob is None:
             risk_prob, importances = simulate_prediction(features)
-
-        # 4️⃣ Décision et distance au seuil
+        
         risk_prob = float(risk_prob)
         decision = "CRÉDIT REFUSÉ" if risk_prob >= threshold else "CRÉDIT ACCORDÉ"
         distance = abs(risk_prob - threshold)
-
-        # 5️⃣ Génération du Top 10 Features
         top_10 = get_top_10_features(importances)
-
-        # 6️⃣ Retour de la réponse
+        
         return PredictionResponse(
             sk_id_curr=sk_id,
             risk_probability=risk_prob,
@@ -963,11 +1178,91 @@ async def predict(client_request: ClientRequest):
             },
             timestamp=datetime.now().isoformat()
         )
-
+    
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Erreur predict: {str(e)}")
+        logger.error(f"❌ Erreur: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/explain")
+async def explain(client_request: ClientRequest):
+    """Retourne les SHAP values pour l'explication locale du client"""
+    try:
+        sk_id = client_request.sk_id_curr
+        
+        if df_light is None:
+            raise HTTPException(status_code=503, detail="Données non chargées")
+        
+        if sk_id not in df_light.index:
+            raise HTTPException(status_code=404, detail=f"Client {sk_id} non trouvé")
+        
+        if not model_loaded or model is None:
+            raise HTTPException(status_code=503, detail="Modèle non chargé")
+        
+        if explainer is None:
+            raise HTTPException(status_code=503, detail="Explainer SHAP non initialisé")
+        
+        # Récupérer les données du client
+        client_data = df_light.loc[sk_id]
+        features = client_data.to_dict()
+        
+        X = pd.DataFrame([features])
+        X = clean_column_names(X)
+        X = X[sorted(X.columns)]
+        
+        # Calculer les SHAP values
+        logger.info(f"⏳ Calcul SHAP pour client {sk_id}...")
+        shap_values = explainer.shap_values(X)
+        
+        # Gérer les cas où shap_values est une liste (pour la classe 1)
+        if isinstance(shap_values, list):
+            shap_values = shap_values[1]
+        
+        # Obtenir la prédiction
+        risk_prob = float(model.predict_proba(X)[0, 1])
+        
+        # Extraire les base values (expected model output)
+        if hasattr(explainer, 'expected_value'):
+            if isinstance(explainer.expected_value, list):
+                base_value = float(explainer.expected_value[1])
+            else:
+                base_value = float(explainer.expected_value)
+        else:
+            base_value = 0.5
+        
+        # Préparer les résultats
+        feature_names = X.columns.tolist()
+        feature_values = X.iloc[0].to_dict()
+        
+        shap_list = []
+        for i, feature_name in enumerate(feature_names):
+            shap_contribution = float(shap_values[0, i]) if isinstance(shap_values, np.ndarray) else float(shap_values[i])
+            shap_list.append(ShapValue(
+                feature_name=feature_name,
+                contribution=shap_contribution,
+                feature_value=float(feature_values.get(feature_name, 0))
+            ))
+        
+        # Trier par contribution absolue
+        shap_list.sort(key=lambda x: abs(x.contribution), reverse=True)
+        
+        logger.info(f"✅ SHAP calculé pour client {sk_id}")
+        
+        return ExplanationResponse(
+            sk_id_curr=sk_id,
+            base_value=base_value,
+            prediction_value=risk_prob,
+            shap_values=shap_list,
+            feature_values=feature_values
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Erreur SHAP: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/clients")

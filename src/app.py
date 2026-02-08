@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
 import logging
+import matplotlib.pyplot as plt
 
 # Configuration
 st.set_page_config(
@@ -39,19 +40,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Configuration API
-# ⚠️ IMPORTANT: Utiliser l'URL Render, pas Railway
-RENDER_API_URL = "https://credit-scoring-api-k4q9.onrender.com"
-
 try:
-    # Essayer le secret Streamlit d'abord
-    secret_url = st.secrets.get("api_url", None)
-    if secret_url and "render" in secret_url.lower():
-        API_URL = secret_url
-    else:
-        # Sinon utiliser Render par défaut
-        API_URL = RENDER_API_URL
+    API_URL = st.secrets.get("api_url", "http://localhost:8001")
 except:
-    API_URL = RENDER_API_URL
+    API_URL = "http://localhost:8001"
 
 # === SIDEBAR ===
 
@@ -79,118 +71,81 @@ if page == "🏠 Accueil":
     st.markdown("---")
     
     # Vérifier l'API
-    st.subheader("🔍 Vérification de la Connexion API")
-    
-    with st.expander("Détails de connexion", expanded=True):
-        st.write(f"**URL API:** `{API_URL}`")
-        
-        try:
-            st.write("⏳ Test de connexion en cours...")
-            response = requests.get(f"{API_URL}/health", timeout=5)
-            st.write(f"✅ **Status HTTP:** {response.status_code}")
-            
-            if response.status_code == 200:
-                st.success("✅ API connectée et fonctionnelle")
-                data = response.json()
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.write(f"**Status:** {data.get('status', 'unknown')}")
-                    st.write(f"**Modèle chargé:** {'Oui ✅' if data.get('model_loaded') else 'Non ❌'}")
-                with col2:
-                    st.write(f"**Nom du modèle:** {data.get('model_name', 'N/A')}")
-                    st.write(f"**Seuil:** {data.get('threshold', 'N/A')}")
-                
-                # Afficher la réponse complète
-                with st.expander("📋 Réponse complète /health"):
-                    st.json(data)
-            else:
-                st.error(f"❌ API retourne le statut: {response.status_code}")
-                st.write(f"Réponse: {response.text}")
-        except requests.exceptions.Timeout:
-            st.error("❌ Timeout: L'API met trop de temps à répondre")
-        except requests.exceptions.ConnectionError as e:
-            st.error(f"❌ Erreur de connexion: {str(e)}")
-        except Exception as e:
-            st.error(f"❌ Erreur: {str(e)}")
-            st.write(f"Type: {type(e).__name__}")
+    try:
+        response = requests.get(f"{API_URL}/health", timeout=5)
+        if response.status_code == 200:
+            st.success("✅ API connectée et fonctionnelle")
+            data = response.json()
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"**Status:** {data['status']}")
+            with col2:
+                st.write(f"**Modèle chargé:** {'Oui' if data['model_loaded'] else 'Non'}")
+        else:
+            st.error(f"❌ API retourne: {response.status_code}")
+    except Exception as e:
+        st.error(f"❌ Impossible de se connecter à l'API: {str(e)}")
     
     st.markdown("---")
     
     # Informations sur le modèle
     try:
-        st.subheader("📋 Récupération des Informations du Modèle")
-        with st.spinner("Chargement..."):
-            response = requests.get(f"{API_URL}/info", timeout=5)
-            st.write(f"✅ Réponse: {response.status_code}")
+        response = requests.get(f"{API_URL}/info", timeout=5)
+        if response.status_code == 200:
+            info = response.json()
+            st.subheader("📋 Informations du Modèle")
             
-            if response.status_code == 200:
-                info = response.json()
-                
-                with st.expander("📋 Réponse brute /info", expanded=False):
-                    st.json(info)
-                
-                st.success("✅ Informations du modèle reçues")
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Nom", info.get('model_name', 'LightGBM'))
-                with col2:
-                    if 'model_version' in info and info['model_version']:
-                        st.metric("Version", info['model_version'])
-                    else:
-                        st.metric("Version", "1.0.0")
-                with col3:
-                    st.metric("Features", info.get('features_count', 20))
-                
-                st.markdown("---")
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.write(f"**Stratégie:** {info.get('strategy', 'class_weight')}")
-                    st.write(f"**Seuil optimal:** {info.get('optimal_threshold', 0.46)}")
-                with col2:
-                    if info.get('data_source'):
-                        st.write(f"**Source données:** {info['data_source']}")
-                    total_clients = info.get('total_clients', 0)
-                    if total_clients:
-                        st.write(f"**Clients:** {total_clients:,}")
-                
-                # Métriques du modèle
-                st.markdown("---")
-                st.subheader("📊 Métriques de Performance")
-                
-                metrics = info.get('metrics', {})
-                col1, col2, col3, col4, col5 = st.columns(5)
-                
-                with col1:
-                    st.metric("F2-Score", f"{metrics.get('f2_score', 0):.4f}")
-                with col2:
-                    st.metric("Recall", f"{metrics.get('recall', 0):.4f}")
-                with col3:
-                    st.metric("Precision", f"{metrics.get('precision', 0):.4f}")
-                with col4:
-                    st.metric("Accuracy", f"{metrics.get('accuracy', 0):.4f}")
-                with col5:
-                    st.metric("AUC-ROC", f"{metrics.get('auc', 0):.4f}")
-                
-                # Liste des features
-                st.markdown("---")
-                with st.expander("📑 Liste des 20 Features"):
-                    cols = st.columns(2)
-                    for i, feature in enumerate(info.get('features', []), 1):
-                        with cols[(i-1) % 2]:
-                            st.write(f"{i:2}. `{feature}`")
-            else:
-                st.error(f"❌ API retourne: {response.status_code}")
-                st.write(f"Contenu: {response.text}")
-    except requests.exceptions.Timeout:
-        st.error("⏱️ Timeout: L'API met trop de temps à répondre")
-    except requests.exceptions.ConnectionError:
-        st.error("❌ Erreur de connexion à l'API")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Nom", info.get('model_name', 'LightGBM'))
+            with col2:
+                if 'model_version' in info and info['model_version']:
+                    st.metric("Version", info['model_version'])
+                else:
+                    st.metric("Version", "1.0.0")
+            with col3:
+                st.metric("Features", info.get('features_count', 20))
+            
+            st.markdown("---")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"**Stratégie:** {info.get('strategy', 'class_weight')}")
+                st.write(f"**Seuil optimal:** {info.get('optimal_threshold', 0.46)}")
+            with col2:
+                if info.get('data_source'):
+                    st.write(f"**Source données:** {info['data_source']}")
+                total_clients = info.get('total_clients', 0)
+                if total_clients:
+                    st.write(f"**Clients:** {total_clients:,}")
+            
+            # Métriques du modèle
+            st.markdown("---")
+            st.subheader("📊 Métriques de Performance")
+            
+            metrics = info.get('metrics', {})
+            col1, col2, col3, col4, col5 = st.columns(5)
+            
+            with col1:
+                st.metric("F2-Score", f"{metrics.get('f2_score', 0):.4f}")
+            with col2:
+                st.metric("Recall", f"{metrics.get('recall', 0):.4f}")
+            with col3:
+                st.metric("Precision", f"{metrics.get('precision', 0):.4f}")
+            with col4:
+                st.metric("Accuracy", f"{metrics.get('accuracy', 0):.4f}")
+            with col5:
+                st.metric("AUC-ROC", f"{metrics.get('auc', 0):.4f}")
+            
+            # Liste des features
+            st.markdown("---")
+            with st.expander("📑 Liste des 20 Features"):
+                cols = st.columns(2)
+                for i, feature in enumerate(info.get('features', []), 1):
+                    with cols[(i-1) % 2]:
+                        st.write(f"{i:2}. `{feature}`")
     except Exception as e:
         st.warning(f"⚠️ Impossible de charger les infos: {str(e)}")
-        st.write(f"Erreur: {type(e).__name__}")
 
 # === PAGE: PRÉDICTION CLIENT ===
 
@@ -199,62 +154,15 @@ elif page == "📊 Prédiction Client":
     st.markdown("---")
     
     # Charger le dataset light
-    
     @st.cache_data
     def load_data_light():
-        """Charge les données light depuis le CSV ou l'API"""
+        """Charge les données light depuis le CSV"""
         try:
-            # Essayer d'abord les chemins locaux
-            possible_paths = [
-                "data/data_mini_features.csv",
-                "./data/data_mini_features.csv",
-                "src/../data/data_mini_features.csv",
-            ]
-            
-            for path in possible_paths:
-                try:
-                    df = pd.read_csv(path)
-                    st.info("✅ Données chargées localement")
-                    return df
-                except FileNotFoundError:
-                    continue
-            
-            # Si fichier local non trouvé, charger depuis l'API
-            st.info(f"🔄 Chargement des données depuis l'API: {API_URL}/clients")
-            
-            try:
-                response = requests.get(f"{API_URL}/clients", timeout=10)
-                st.write(f"📡 Réponse API: Status {response.status_code}")
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    st.write(f"📊 Données reçues: {data}")
-                    
-                    clients_list = data.get('clients', [])
-                    
-                    if clients_list:
-                        # Créer un DataFrame avec les IDs des clients
-                        df = pd.DataFrame({'SK_ID_CURR': clients_list})
-                        st.success(f"✅ Données chargées depuis l'API: {len(clients_list)} clients")
-                        return df
-                    else:
-                        st.warning("⚠️ Aucun client disponible dans la réponse")
-                        return None
-                else:
-                    st.error(f"❌ API retourne: {response.status_code}")
-                    st.write(f"Contenu: {response.text}")
-                    return None
-            except requests.exceptions.Timeout:
-                st.error("❌ Timeout: L'API met trop de temps à répondre")
-                return None
-            except requests.exceptions.ConnectionError as ce:
-                st.error(f"❌ Erreur de connexion: {str(ce)}")
-                return None
-            except Exception as api_error:
-                st.error(f"❌ Erreur API: {str(api_error)}")
-                st.write(f"Type d'erreur: {type(api_error).__name__}")
-                return None
-                
+            df = pd.read_csv("data/data_light_features.csv")
+            return df
+        except FileNotFoundError:
+            st.error("❌ Fichier data/data_light_features.csv non trouvé")
+            return None
         except Exception as e:
             st.error(f"❌ Erreur: {e}")
             return None
@@ -335,6 +243,25 @@ elif page == "📊 Prédiction Client":
             
             st.markdown("---")
             
+            # Tableau explicatif des deux types d'importances
+            st.info("""
+            ### 📚 Comprendre les Feature Importances:
+            
+            **1. Feature Importance GLOBALE (Top 10 Features)**
+            - Calcul: Basé sur tous les clients du dataset
+            - Variation: IDENTIQUE pour tous les clients ✓
+            - Signification: Quelles features sont importantes en général pour le modèle?
+            - Exemple: Age est la 3ème feature la plus importante pour TOUS les clients
+            
+            **2. Feature Importance LOCALE (SHAP Waterfall)**
+            - Calcul: Spécifique à chaque client
+            - Variation: DIFFÉRENTE pour chaque client ✓
+            - Signification: Pourquoi le modèle prédit ce risque POUR CE CLIENT?
+            - Exemple: L'age du client X augmente son risque, mais pas pour le client Y
+            """)
+            
+            st.markdown("---")
+            
             # Bouton de prédiction
             if st.button("🔮 LANCER LA PRÉDICTION", use_container_width=True, type="primary"):
                 with st.spinner("Prédiction en cours..."):
@@ -357,6 +284,7 @@ elif page == "📊 Prédiction Client":
                             st.markdown("---")
                             st.subheader("✅ RÉSULTATS")
                             
+                            # Afficher les métriques principales
                             col1, col2, col3, col4 = st.columns(4)
                             
                             with col1:
@@ -383,6 +311,7 @@ elif page == "📊 Prédiction Client":
                             
                             st.markdown("---")
                             
+                            # Résumé principaux
                             prob = result['risk_probability']
                             if "ACCORDÉ" in decision:
                                 st.success(f"✅ **CRÉDIT ACCORDÉ** - Risque: {prob:.1%}")
@@ -418,20 +347,48 @@ elif page == "📊 Prédiction Client":
                             
                             st.plotly_chart(fig, use_container_width=True)
                             
-                            # Top 10 features
+                            # === RÉCAPITULATIF DES DEUX TYPES D'IMPORTANCE ===
+                            st.markdown("---")
+                            col_recap1, col_recap2 = st.columns(2)
+                            
+                            with col_recap1:
+                                st.subheader("🌍 Feature Importance GLOBALE")
+                                st.write("""
+                                - **Basée sur**: Tous les clients du dataset
+                                - **Stabilité**: Identique pour tous les clients
+                                - **Miseà jours**: Seulement lors du réentraînement du modèle
+                                - **Utilité**: Comprendre quelles features sont importantes EN GÉNÉRAL
+                                """)
+                            
+                            with col_recap2:
+                                st.subheader("👤 Feature Importance LOCALE (SHAP)")
+                                st.write("""
+                                - **Basée sur**: Le client spécifique analysé
+                                - **Variation**: Différente pour chaque client
+                                - **Mise à jour**: Calculée à chaque prédiction
+                                - **Utilité**: Expliquer pourquoi le modèle prédit ce risque POUR CE CLIENT
+                                """)
+                            
+                            st.markdown("---")
+                            
+                            # Top 10 features GLOBALES
                             if result.get('top_10_features'):
                                 st.markdown("---")
-                                st.subheader("🎯 Top 10 Features")
+                                st.subheader("🎯 Top 10 Features Importances - Globales (Modèle)")
+                                st.info("ℹ️ Ces importances sont **identiques pour TOUS les clients** - elles représentent l'importance globale de chaque feature pour le modèle LightGBM")
                                 
                                 top_10 = result['top_10_features']
                                 top_10_df = pd.DataFrame([
                                     {
-                                        'Rang': f["rank"],
-                                        'Feature': f["feature_name"],
-                                        'Importance': f["importance_value"]
+                                        'Rang': int(f["rank"]),
+                                        'Feature': str(f["feature_name"]),
+                                        'Importance': float(f["importance_value"])
                                     }
                                     for f in top_10
                                 ])
+                                
+                                # Convertir en types standard pour éviter les erreurs PyArrow
+                                top_10_df = top_10_df.astype({'Rang': 'int64', 'Feature': 'object', 'Importance': 'float64'})
                                 
                                 st.dataframe(top_10_df, use_container_width=True, hide_index=True)
                                 
@@ -439,9 +396,164 @@ elif page == "📊 Prédiction Client":
                                     top_10_df,
                                     x='Importance',
                                     y='Feature',
-                                    orientation='h'
+                                    orientation='h',
+                                    title="Feature Importance Globale du Modèle",
+                                    labels={'Importance': 'Valeur d\'Importance', 'Feature': 'Feature'}
                                 )
+                                fig2.update_layout(showlegend=False)
                                 st.plotly_chart(fig2, use_container_width=True)
+                            
+                            # === SHAP WATERFALL ===
+                            st.markdown("---")
+                            st.subheader("📊 Waterfall SHAP - Feature Importance Locale (Client Spécifique)")
+                            st.info("ℹ️ Ces explications sont **spécifiques à ce client** - elles montrent comment chaque feature influence la prédiction POUR CE CLIENT en particulier")
+                            
+                            if st.button("🔄 Charger Explications SHAP", use_container_width=True):
+                                with st.spinner("Calcul des SHAP values en cours..."):
+                                    try:
+                                        explain_response = requests.post(
+                                            f"{API_URL}/explain",
+                                            json={
+                                                "sk_id_curr": int(selected_sk_id),
+                                                "features": {},
+                                                "threshold": float(threshold)
+                                            },
+                                            timeout=30
+                                        )
+                                        
+                                        if explain_response.status_code == 200:
+                                            shap_data = explain_response.json()
+                                            
+                                            # Afficher les infos SHAP
+                                            col1, col2, col3 = st.columns(3)
+                                            with col1:
+                                                st.metric(
+                                                    "Base Value",
+                                                    f"{shap_data['base_value']:.1%}"
+                                                )
+                                            with col2:
+                                                st.metric(
+                                                    "Prediction Value",
+                                                    f"{shap_data['prediction_value']:.1%}"
+                                                )
+                                            with col3:
+                                                st.metric(
+                                                    "Contribution Totale",
+                                                    f"{(shap_data['prediction_value'] - shap_data['base_value']):.1%}"
+                                                )
+                                            
+                                            # Créer le waterfall plot
+                                            st.markdown("---")
+                                            st.subheader("🌊 Waterfall Plot")
+                                            
+                                            shap_values = shap_data['shap_values'][:10]  # Top 10
+                                            
+                                            # Créer le dataframe pour le plot
+                                            waterfall_data = pd.DataFrame([
+                                                {
+                                                    'Feature': f"{str(v['feature_name'])} (={float(v['feature_value']):.2f})",
+                                                    'Contribution': float(v['contribution']),
+                                                    'Type': 'Positive' if float(v['contribution']) >= 0 else 'Negative'
+                                                }
+                                                for v in shap_values
+                                            ])
+                                            
+                                            # Convertir en types standard
+                                            waterfall_data = waterfall_data.astype({'Feature': 'object', 'Contribution': 'float64', 'Type': 'object'})
+                                            
+                                            # Créer le graphique waterfall
+                                            fig_waterfall = go.Figure()
+                                            
+                                            # Ajouter la ligne de base
+                                            base_val = shap_data['base_value']
+                                            cumulative_sum = base_val
+                                            x_values = []
+                                            y_values = []
+                                            colors = []
+                                            
+                                            # Point de départ
+                                            x_values.append('Base Value')
+                                            y_values.append(base_val)
+                                            colors.append('lightgray')
+                                            
+                                            # Ajouter chaque contribution
+                                            for idx, row in waterfall_data.iterrows():
+                                                x_values.append(row['Feature'])
+                                                prev_cumsum = cumulative_sum
+                                                cumulative_sum += row['Contribution']
+                                                y_values.append(cumulative_sum)
+                                                
+                                                if row['Contribution'] >= 0:
+                                                    colors.append('#28a745')  # Vert
+                                                else:
+                                                    colors.append('#dc3545')  # Rouge
+                                            
+                                            # Ajouter le point final
+                                            x_values.append('Prediction')
+                                            y_values.append(cumulative_sum)
+                                            colors.append('lightblue')
+                                            
+                                            # Créer le waterfall
+                                            fig_waterfall.add_trace(go.Waterfall(
+                                                x=x_values,
+                                                y=y_values,
+                                                base=base_val,
+                                                measure=['absolute'] + ['relative'] * len(waterfall_data) + ['absolute'],
+                                                text=[f"{v:.2%}" for v in y_values],
+                                                textposition="auto",
+                                                marker={"color": colors},
+                                                connector={"line": {"color": "rgba(100, 100, 100, 0.4)"}},
+                                                hovertemplate='<b>%{x}</b><br>Value: %{y:.4f}<extra></extra>'
+                                            ))
+                                            
+                                            fig_waterfall.update_layout(
+                                                title="SHAP Waterfall - Impact des Features sur la Prédiction",
+                                                xaxis_title="Features",
+                                                yaxis_title="Probabilité de Risque",
+                                                height=600,
+                                                showlegend=False,
+                                                template="plotly_white",
+                                                hovermode="x unified"
+                                            )
+                                            
+                                            st.plotly_chart(fig_waterfall, use_container_width=True)
+                                            
+                                            # Tableau détaillé des SHAP values
+                                            st.markdown("---")
+                                            st.subheader("📋 Détail des SHAP Values")
+                                            
+                                            shap_df = pd.DataFrame([
+                                                {
+                                                    'Feature': str(v['feature_name']),
+                                                    'Valeur': f"{float(v['feature_value']):.4f}",
+                                                    'Contribution SHAP': f"{float(v['contribution']):+.6f}",
+                                                    'Impact': '↑ Augmente le risque' if float(v['contribution']) >= 0 else '↓ Diminue le risque'
+                                                }
+                                                for v in shap_values
+                                            ])
+                                            
+                                            # Convertir en types standard
+                                            shap_df = shap_df.astype({'Feature': 'object', 'Valeur': 'object', 'Contribution SHAP': 'object', 'Impact': 'object'})
+                                            
+                                            st.dataframe(shap_df, use_container_width=True, hide_index=True)
+                                            
+                                            st.success(f"✅ SHAP Values calculées avec succès!")
+                                            st.info("""
+                                                **Interprétation SHAP (Feature Importance Locale):**
+                                                - **Base Value**: Prédiction moyenne du modèle sur tous les clients
+                                                - **Contributions positives** (🟢 vert): Ces features AUGMENTENT le risque pour CE CLIENT
+                                                - **Contributions négatives** (🔴 rouge): Ces features DIMINUENT le risque pour CE CLIENT
+                                                - **Prediction**: Résultat final = Base Value + somme des contributions
+                                                
+                                                ⚠️ Note: Ces valeurs sont UNIQUES à ce client. Un autre client aura des contributions différentes même avec le même modèle!
+                                            """)
+                                        else:
+                                            st.error(f"❌ Erreur API explain: {explain_response.status_code}")
+                                    
+                                    except requests.exceptions.ConnectionError:
+                                        st.error(f"❌ Impossible de se connecter à {API_URL}")
+                                    except Exception as e:
+                                        st.error(f"❌ Erreur SHAP: {str(e)}")
                         else:
                             st.error(f"❌ Erreur API: {response.status_code}")
                     except requests.exceptions.ConnectionError:
@@ -543,8 +655,8 @@ elif page == "📋 Documentation":
     - Consultez les métriques en temps réel
     
     ### 3. API Documentation
-    - [API Swagger](https://credit-scoring-api-k4q9.onrender.com/docs)
-    - [API ReDoc](https://credit-scoring-api-k4q9.onrender.com/redoc)
+    - [API Swagger](http://localhost:8001/docs)
+    - [API ReDoc](http://localhost:8001/redoc)
     """)
     
     try:
