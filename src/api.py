@@ -192,52 +192,31 @@ def load_model():
         return False
 
 def initialize_shap_explainer():
-    """Initialise l'explainer SHAP avec un sous-ensemble des données"""
-    global explainer, X_background, df_light
-    
+    """
+    Initialise SHAP Explainer sur le pipeline complet.
+    Compatible modèle MLflow enregistré après preprocessing.
+    """
+    global explainer, model
+
     try:
-        if model is None or df_light is None:
-            logger.warning("⚠️ Modèle ou données non chargées, SHAP non initialisé")
+        if model is None:
+            logger.error("❌ Modèle non chargé")
             return False
-        
-        logger.info("🔄 Initialisation SHAP Explainer...")
-        logger.info(f"📊 Model type: {type(model).__name__}")
-        
-        # Utiliser un sous-ensemble aléatoire pour le background
-        sample_size = min(100, len(df_light))
-        X_background = df_light.sample(n=sample_size, random_state=42)
-        X_background = clean_column_names(X_background)
-        
-        # Créer l'explainer SHAP TreeExplainer pour LightGBM
-        try:
-            # Si c'est un Pipeline, essayer d'accéder au classifier interne
-            model_for_shap = model
-            if hasattr(model, 'named_steps'):
-                classifier = model.named_steps.get('classifier')
-                if classifier:
-                    logger.info(f"📊 Extraction classifier du pipeline: {type(classifier).__name__}")
-                    model_for_shap = classifier
-            
-            logger.info(f"🔄 TreeExplainer sur {type(model_for_shap).__name__}...")
-            explainer = shap.TreeExplainer(model_for_shap)
-            logger.info(f"✅ SHAP TreeExplainer initialisé avec {sample_size} exemples")
-            return True
-        except Exception as e:
-            logger.warning(f"⚠️ TreeExplainer échoué: {e}")
-            logger.info("🔄 Basculement sur KernelExplainer (plus lent)...")
-            # Fallback sur KernelExplainer si TreeExplainer échoue
-            explainer = shap.KernelExplainer(
-                lambda x: model.predict_proba(x)[:, 1],
-                X_background.values[:20]  # Petit background pour KernelExplainer (très lent)
-            )
-            logger.info("✅ SHAP KernelExplainer initialisé")
-            return True
-    
+
+        logger.info("🔄 Initialisation SHAP Explainer sur pipeline complet...")
+
+        # SHAP détecte automatiquement LightGBM + Pipeline
+        explainer = shap.Explainer(model)
+
+        logger.info("✅ SHAP Explainer initialisé correctement")
+        return True
+
     except Exception as e:
-        logger.error(f"❌ Erreur SHAP: {str(e)}")
+        logger.error(f"❌ Erreur initialisation SHAP: {str(e)}")
         import traceback
         logger.error(traceback.format_exc())
         return False
+
 
 # NOTE: Simulation helpers removed to ensure all predictions and importances
 # come from the trained model and SHAP explainer. If the model or explainer
@@ -1248,70 +1227,76 @@ async def predict(client_request: ClientRequest):
         logger.error(f"❌ Erreur: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/explain")
+@app.post("/explain", response_model=ExplanationResponse)
 async def explain(client_request: ClientRequest):
-    """Retourne les SHAP values pour l'explication locale du client"""
+    """
+    Retourne les SHAP values locales pour un client donné.
+    Compatible pipeline MLflow complet.
+    """
+
     try:
         sk_id = client_request.sk_id_curr
-        
+
         if df_light is None:
             raise HTTPException(status_code=503, detail="Données non chargées")
-        
+
         if sk_id not in df_light.index:
             raise HTTPException(status_code=404, detail=f"Client {sk_id} non trouvé")
-        
+
         if not model_loaded or model is None:
             raise HTTPException(status_code=503, detail="Modèle non chargé")
-        
+
         if explainer is None:
             raise HTTPException(status_code=503, detail="Explainer SHAP non initialisé")
-        
-        # Récupérer les données du client
+
+        # =========================
+        # Préparation données client
+        # =========================
         client_data = df_light.loc[sk_id]
-        features = client_data.to_dict()
-        
-        X = pd.DataFrame([features])
+        X = pd.DataFrame([client_data])
         X = clean_column_names(X)
-        X = X[sorted(X.columns)]
-        
-        # Calculer les SHAP values
+
         logger.info(f"⏳ Calcul SHAP pour client {sk_id}...")
-        shap_values = explainer.shap_values(X)
-        
-        # Gérer les cas où shap_values est une liste (pour la classe 1)
-        if isinstance(shap_values, list):
-            shap_values = shap_values[1]
-        
-        # Obtenir la prédiction
+
+        # =========================
+        # Calcul SHAP
+        # =========================
+        shap_values = explainer(X)
+
+        shap_client = shap_values.values[0]
+        base_value = float(shap_values.base_values[0])
+
+        # =========================
+        # Prédiction
+        # =========================
         risk_prob = float(model.predict_proba(X)[0, 1])
-        
-        # Extraire les base values (expected model output)
-        if hasattr(explainer, 'expected_value'):
-            if isinstance(explainer.expected_value, list):
-                base_value = float(explainer.expected_value[1])
-            else:
-                base_value = float(explainer.expected_value)
-        else:
-            base_value = 0.5
-        
-        # Préparer les résultats
+
+        # Vérification mathématique (important soutenance)
+        shap_sum = base_value + np.sum(shap_client)
+        logger.info(
+            f"🔍 Vérification: base + somme(shap) = {shap_sum:.6f} | prédiction = {risk_prob:.6f}"
+        )
+
+        # =========================
+        # Formatage résultat
+        # =========================
         feature_names = X.columns.tolist()
         feature_values = X.iloc[0].to_dict()
-        
-        shap_list = []
-        for i, feature_name in enumerate(feature_names):
-            shap_contribution = float(shap_values[0, i]) if isinstance(shap_values, np.ndarray) else float(shap_values[i])
-            shap_list.append(ShapValue(
-                feature_name=feature_name,
-                contribution=shap_contribution,
-                feature_value=float(feature_values.get(feature_name, 0))
-            ))
-        
-        # Trier par contribution absolue
+
+        shap_list = [
+            ShapValue(
+                feature_name=feature_names[i],
+                contribution=float(shap_client[i]),
+                feature_value=float(feature_values.get(feature_names[i], 0))
+            )
+            for i in range(len(feature_names))
+        ]
+
+        # Trier par importance absolue
         shap_list.sort(key=lambda x: abs(x.contribution), reverse=True)
-        
-        logger.info(f"✅ SHAP calculé pour client {sk_id}")
-        
+
+        logger.info(f"✅ SHAP calculé correctement pour client {sk_id}")
+
         return ExplanationResponse(
             sk_id_curr=sk_id,
             base_value=base_value,
@@ -1319,7 +1304,7 @@ async def explain(client_request: ClientRequest):
             shap_values=shap_list,
             feature_values=feature_values
         )
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1327,6 +1312,7 @@ async def explain(client_request: ClientRequest):
         import traceback
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/clients")
 async def list_clients():
